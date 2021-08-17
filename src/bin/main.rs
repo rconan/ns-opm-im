@@ -21,8 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // WIND LOADS
     println!("Loading wind loads ...");
     let mut wind_loading = WindLoads::from_pickle(
-        Path::new("/home/rconan/projects/dos/data/20210225_1447_MT_mount_v202102_ASM_wind2/")
-            .join("b2019_0z_30az_os_7ms.wind_loads_1kHz_100-400s.pkl"),
+        Path::new("data").join("b2019_0z_30az_os_7ms.wind_loads_1kHz_100-400s.pkl"),
     )?
     .range(0.0, 20.0)
     .truss()?
