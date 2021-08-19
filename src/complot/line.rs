@@ -1,10 +1,10 @@
-use super::Config;
+use super::{Config, Utils};
 use colorous;
 use plotters::prelude::*;
 use std::iter::FromIterator;
 
 pub struct Plot {}
-
+impl Utils for Plot {}
 /*impl<'a> FromIterator<f64> for Plot {
     fn from_iter<I: IntoIterator<Item = f64>>(iter: I) -> Self {
         let fig = SVGBackend::new("plot.svg", (768, 512)).into_drawing_area();
@@ -36,31 +36,15 @@ impl<'a> FromIterator<(f64, Vec<f64>)> for Plot {
         let fig = SVGBackend::new("plot.svg", (768, 512)).into_drawing_area();
         fig.fill(&WHITE).unwrap();
         let xy: Vec<_> = iter.into_iter().collect();
-        let (x_max, y_max) = xy.iter().cloned().fold(
-            (f64::NEG_INFINITY, f64::NEG_INFINITY),
-            |(fx, fy), (x, y)| {
-                (
-                    fx.max(x),
-                    fy.max(y.iter().cloned().fold(f64::NEG_INFINITY, |fy, y| fy.max(y))),
-                )
-            },
-        );
-        let (x_min, y_min) =
-            xy.iter()
-                .cloned()
-                .fold((f64::INFINITY, f64::INFINITY), |(fx, fy), (x, y)| {
-                    (
-                        fx.min(x),
-                        fy.min(y.iter().cloned().fold(f64::INFINITY, |fy, y| fy.min(y))),
-                    )
-                });
+        let (x_max, y_max) = Self::xy_max(&xy);
+        let (x_min, y_min) = Self::xy_min(&xy);
         let mut chart = ChartBuilder::on(&fig)
             .set_label_area_size(LabelAreaPosition::Left, 50)
             .set_label_area_size(LabelAreaPosition::Bottom, 40)
             .margin(10)
             .build_cartesian_2d(x_min..x_max, y_min..y_max)
             .unwrap();
-        let n_y = xy.iter().nth(0).unwrap().1.len();
+        let n_y = xy[0].1.len();
         let data: Vec<_> = xy
             .into_iter()
             .flat_map(|(x, y)| y.into_iter().map(|y| (x, y)).collect::<Vec<(f64, f64)>>())
@@ -81,7 +65,7 @@ impl<'a> FromIterator<(f64, Vec<f64>)> for Plot {
 
 impl<'a, I: Iterator<Item = (f64, Vec<f64>)>> From<(I, Option<Config<'a>>)> for Plot {
     fn from((iter, config): (I, Option<Config>)) -> Self {
-        let config = config.unwrap_or_default();
+        let mut config = config.unwrap_or_default();
         let filename = config
             .filename
             .unwrap_or_else(|| "complot-plot.svg".to_string());
@@ -89,24 +73,8 @@ impl<'a, I: Iterator<Item = (f64, Vec<f64>)>> From<(I, Option<Config<'a>>)> for 
         let fig = SVGBackend::new(&filename, (768, 512)).into_drawing_area();
         fig.fill(&WHITE).unwrap();
         let xy: Vec<_> = iter.collect();
-        let (x_max, y_max) = xy.iter().cloned().fold(
-            (f64::NEG_INFINITY, f64::NEG_INFINITY),
-            |(fx, fy), (x, y)| {
-                (
-                    fx.max(x),
-                    fy.max(y.iter().cloned().fold(f64::NEG_INFINITY, |fy, y| fy.max(y))),
-                )
-            },
-        );
-        let (x_min, y_min) =
-            xy.iter()
-                .cloned()
-                .fold((f64::INFINITY, f64::INFINITY), |(fx, fy), (x, y)| {
-                    (
-                        fx.min(x),
-                        fy.min(y.iter().cloned().fold(f64::INFINITY, |fy, y| fy.min(y))),
-                    )
-                });
+        let (x_max, y_max) = Self::xy_max(&xy);
+        let (x_min, y_min) = Self::xy_min(&xy);
 
         let mut chart = ChartBuilder::on(&fig)
             .set_label_area_size(LabelAreaPosition::Left, 50)
@@ -123,7 +91,7 @@ impl<'a, I: Iterator<Item = (f64, Vec<f64>)>> From<(I, Option<Config<'a>>)> for 
         }
         mesh.draw().unwrap();
 
-        let n_y = xy.iter().nth(0).unwrap().1.len();
+        let n_y = xy[0].1.len();
         let data: Vec<_> = xy
             .into_iter()
             .flat_map(|(x, y)| y.into_iter().map(|y| (x, y)).collect::<Vec<(f64, f64)>>())

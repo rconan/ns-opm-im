@@ -1,9 +1,11 @@
 mod line;
 pub use line::Plot;
 mod scatter;
-pub use scatter::{Scatter, Scatters};
+pub use scatter::Scatter;
 use std::ops::Range;
+mod combo;
 pub mod tri;
+pub use combo::{Combo, Complot, Kind};
 use plotters::{coord::Shift, prelude::*};
 
 pub fn canvas(filename: &str) -> DrawingArea<SVGBackend, Shift> {
@@ -99,5 +101,29 @@ impl<'a> Config<'a> {
             yaxis: axis,
             ..self
         }
+    }
+}
+pub trait Utils {
+    fn xy_max(data: &[(f64, Vec<f64>)]) -> (f64, f64) {
+        data.iter().cloned().fold(
+            (f64::NEG_INFINITY, f64::NEG_INFINITY),
+            |(fx, fy), (x, y)| {
+                (
+                    fx.max(x),
+                    fy.max(y.iter().cloned().fold(f64::NEG_INFINITY, |fy, y| fy.max(y))),
+                )
+            },
+        )
+    }
+    fn xy_min(data: &[(f64, Vec<f64>)]) -> (f64, f64) {
+        data.iter().cloned().fold(
+            (f64::NEG_INFINITY, f64::NEG_INFINITY),
+            |(fx, fy), (x, y)| {
+                (
+                    fx.min(x),
+                    fy.min(y.iter().cloned().fold(f64::NEG_INFINITY, |fy, y| fy.min(y))),
+                )
+            },
+        )
     }
 }
