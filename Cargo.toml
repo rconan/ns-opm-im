@@ -11,6 +11,7 @@ crseo = { git = "https://github.com/rconan/crseo.git", branch = "ns-opm-im", fea
 dosio = { git = "https://github.com/rconan/dosio.git", branch = "ns-opm-im" }
 fem = { git = "https://github.com/rconan/fem.git", branch = "ns-opm-im", features = ["dos"] }
 geotrans = { git = "https://github.com/rconan/geotrans.git", branch = "main" }
+humantime = "2.1.0"
 indicatif = "0.16.2"
 m1-ctrl = { git = "https://github.com/rconan/m1-ctrl.git", branch = "ns-opm-im" }
 mount-ctrl = { git = "https://github.com/rconan/mount-ctrl.git", branch = "ns-opm-im" }

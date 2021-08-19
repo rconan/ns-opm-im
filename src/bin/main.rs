@@ -1,7 +1,11 @@
-use crseo::{dos::GmtOpticalSensorModel, from_opticals, sensitivities::Bin, OpticalSensitivities};
 use crseo::{
-    imaging::NoiseDataSheet, shackhartmann::Diffractive as WFS_TYPE,
-    shackhartmann::WavefrontSensorBuilder, Builder, ShackHartmann, SH48,
+    calibrations,
+    dos::GmtOpticalSensorModel,
+    from_opticals,
+    imaging::NoiseDataSheet,
+    sensitivities::Bin,
+    shackhartmann::{Diffractive, Geometric, WavefrontSensorBuilder},
+    Builder, Calibration, OpticalSensitivities, ShackHartmann, SH48,
 };
 use dosio::{io::jar, ios, Dos, IOVec, IO};
 use fem::{dos::DiscreteStateSpace, FEM};
@@ -9,7 +13,8 @@ use indicatif::ProgressBar;
 use m1_ctrl as m1;
 use mount_ctrl as mount;
 use nalgebra as na;
-use ns_opm_im::complot::{Axis, Config, Plot};
+use ns_opm_im::complot::{Axis, Combo, Complot, Config, Kind, Plot};
+use plotters::prelude::*;
 use simple_logger::SimpleLogger;
 use skyangle::Conversion;
 use std::{path::Path, time::Instant};
@@ -23,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut wind_loading = WindLoads::from_pickle(
         Path::new("data").join("b2019_0z_30az_os_7ms.wind_loads_1kHz_100-400s.pkl"),
     )?
-    .range(0.0, 20.0)
+    .range(0.0, 2.0)
     .truss()?
     .build()?;
 
@@ -86,10 +91,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         OSSRotDriveTorque(vec![0f64; 4])
     ));
 
-    let mut data_log = Vec::<f64>::with_capacity(wind_loading.n_sample * 23);
-    //    let mut mount_log = Vec::<f64>::with_capacity(wind_loading.n_sample);
-    let mut m1_axial = Vec::<f64>::with_capacity(wind_loading.n_sample * 7);
-
     // OPTICAL SENSITIVITIES
     /*    let opticals = from_opticals(
         &{
@@ -105,18 +106,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //    let data_rm: |…| -> {unknown} = |data: &mut Vec<IO<Vec<f64>>>, p: IO<()>| {data.remove(data.iter().position(|x: &{unknown}| *x == p).unwrap());};
 
+    // CEO WFSS
     let exposure_time = 1.0;
+    let n_sensor = 1;
     let wfs_sample_rate = (exposure_time * sampling_rate) as usize;
-    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WFS_TYPE>, SH48<WFS_TYPE>>::new()
-        .sensor(
-            SH48::<WFS_TYPE>::new()
-                .n_sensor(1)
-                .detector_noise_specs(NoiseDataSheet::new(exposure_time)),
-        )
+    let wfs_delay = sampling_rate as usize * 0;
+    let wfs_blueprint = SH48::<Geometric>::new().n_sensor(n_sensor);
+    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<Geometric>, SH48<Geometric>>::new()
+        .sensor(wfs_blueprint.clone())
         .build()?;
     println!("M1 mode: {}", gosm.gmt.get_m1_mode_type());
     println!("M2 mode: {}", gosm.gmt.get_m2_mode_type());
     println!("GS band: {}", gosm.src.get_photometric_band());
+
+    let mut gmt2wfs = Calibration::new(&gosm.gmt, &gosm.src, wfs_blueprint);
+    let mirror = vec![calibrations::Mirror::M2];
+    let segments = vec![vec![calibrations::Segment::Rxyz(1e-6, Some(0..2))]; 7];
+    let now = Instant::now();
+    gmt2wfs.calibrate(mirror, segments, Some(0.8));
+    println!(
+        "GTM 2 WFS calibration [{}x{}] in {}s",
+        gmt2wfs.n_data,
+        gmt2wfs.n_mode,
+        now.elapsed().as_secs()
+    );
+    let poke_sum = gmt2wfs.poke.from_dev().iter().sum::<f32>();
+    println!("Poke sum: {}", poke_sum);
+    let wfs_2_m2rxy = gmt2wfs.qr();
+
+    let mut data_log = Vec::<f64>::with_capacity(wind_loading.n_sample * 23);
+    let mut m2_log = Vec::<f64>::with_capacity(wind_loading.n_sample * 14);
+    let mut wfs_log = Vec::<f64>::with_capacity(wind_loading.n_sample * 14 / wfs_sample_rate);
+    //    let mut mount_log = Vec::<f64>::with_capacity(wind_loading.n_sample);
+    let mut m1_axial = Vec::<f64>::with_capacity(wind_loading.n_sample * 7);
 
     let pb = ProgressBar::new(wind_loading.n_sample as u64);
     let now = Instant::now();
@@ -155,14 +177,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into_iter(),
         );
         // WFSing
-        gosm.inputs(Some(vec![
-            fem_outputs[ios!(OSSM1Lcl)].clone(),
-            fem_outputs[ios!(MCM2Lcl6D)].clone(),
-        ]))?
-        //gosm.inputs(fem_outputs.pop_these(ios!(OSSM1Lcl, MCM2Lcl6D)))?
-        .step()?;
-        let sensor_data = if k > 0 && k % wfs_sample_rate == 0 {
-            gosm.outputs()
+        let m2_rxy: Option<Vec<f32>> = if k >= wfs_delay {
+            gosm.inputs(Some(vec![
+                fem_outputs[ios!(OSSM1Lcl)].clone(),
+                fem_outputs[ios!(MCM2Lcl6D)].clone(),
+            ]))?
+            //gosm.inputs(fem_outputs.pop_these(ios!(OSSM1Lcl, MCM2Lcl6D)))?
+            .step()?;
+            if k % wfs_sample_rate == 0 {
+                let y = gosm
+                    .outputs()
+                    .map(|x| Into::<Option<Vec<f64>>>::into(x[0].clone()))
+                    .unwrap()
+                    .map(|x| x.into_iter().map(|x| x as f32).collect::<Vec<f32>>())
+                    .unwrap();
+                Some(wfs_2_m2rxy.solve(&mut y.into()).into())
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -212,15 +244,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into_iter(),
             );
         data_log.extend(&tspst);
+
+        // M2 Rxy logging
+        m2_log.append(
+            &mut Option::<Vec<f64>>::from(&fem_outputs[ios!(MCM2Lcl6D)])
+                .map(|x| {
+                    x.chunks(6)
+                        .map(|x| x[3..5].to_vec())
+                        .flatten()
+                        .collect::<Vec<f64>>()
+                })
+                .unwrap(),
+        );
+        // WFS M2 Rxy estimate logging
+        if let Some(values) = m2_rxy {
+            wfs_log.extend(values.iter().map(|&x| x as f64))
+        }
     }
     pb.finish();
-    let eta = now.elapsed().as_millis();
+    let eta = now.elapsed();
     println!(
         "{} sample wind loads played in {}ms ({}ms/step)",
         wind_loading.n_sample,
-        eta,
-        eta as f64 / wind_loading.n_sample as f64
+        humantime::format_duration(eta),
+        eta.as_millis() as f64 / wind_loading.n_sample as f64
     );
+
+    println!("m2_log: {}", m2_log.len());
+    println!("wfs_log: {}", wfs_log.len());
 
     let (tilts, segments): (Vec<_>, Vec<_>) = data_log
         .into_iter()
@@ -304,5 +355,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ));
 
+    let iter1: Vec<(f64, Vec<f64>)> = {
+        let data: Vec<_> = m2_log
+            .chunks(14)
+            .flat_map(|x| x.chunks(2).map(|x| x[0].hypot(x[1])).collect::<Vec<f64>>())
+            .collect();
+        data.chunks(7)
+            .enumerate()
+            .map(|(k, tilts)| {
+                (
+                    k as f64 / sampling_rate,
+                    tilts.iter().map(|x| x.to_mas()).collect::<Vec<f64>>(),
+                )
+            })
+            .collect()
+    };
+    let iter2: Vec<(f64, Vec<f64>)> = {
+        let data: Vec<_> = wfs_log
+            .chunks(14)
+            .flat_map(|x| x.chunks(2).map(|x| x[0].hypot(x[1])).collect::<Vec<f64>>())
+            .collect();
+        data.chunks(7)
+            .enumerate()
+            .map(|(k, tilts)| {
+                println!("k: {}", k);
+                (
+                    k as f64 / sampling_rate,
+                    tilts.iter().map(|x| x.to_mas()).collect::<Vec<f64>>(),
+                )
+            })
+            .collect()
+    };
+
+    <Combo as From<Complot>>::from((
+        vec![Box::new(iter1.into_iter()), Box::new(iter2.into_iter())],
+        vec![Kind::Plot, Kind::Scatter],
+        Some(
+            Config::new()
+                .filename("ns-opm-im_m2-rxy.svg")
+                .xaxis(Axis::new().label("Time [s]").range(0f64..2f64))
+                .yaxis(Axis::new().label("M2 Rxy [mas]").range(0f64..1000f64)),
+        ),
+    ));
     Ok(())
 }
