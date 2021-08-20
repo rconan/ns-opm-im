@@ -65,7 +65,7 @@ impl<'a> FromIterator<(f64, Vec<f64>)> for Plot {
 
 impl<'a, I: Iterator<Item = (f64, Vec<f64>)>> From<(I, Option<Config<'a>>)> for Plot {
     fn from((iter, config): (I, Option<Config>)) -> Self {
-        let mut config = config.unwrap_or_default();
+        let config = config.unwrap_or_default();
         let filename = config
             .filename
             .unwrap_or_else(|| "complot-plot.svg".to_string());
@@ -75,6 +75,16 @@ impl<'a, I: Iterator<Item = (f64, Vec<f64>)>> From<(I, Option<Config<'a>>)> for 
         let xy: Vec<_> = iter.collect();
         let (x_max, y_max) = Self::xy_max(&xy);
         let (x_min, y_min) = Self::xy_min(&xy);
+        assert!(
+            x_max > x_min,
+            "Incorrect x axis range: {:?}",
+            [x_min, x_max]
+        );
+        assert!(
+            y_max > y_min,
+            "Incorrect y axis range: {:?}",
+            [y_min, y_max]
+        );
 
         let mut chart = ChartBuilder::on(&fig)
             .set_label_area_size(LabelAreaPosition::Left, 50)

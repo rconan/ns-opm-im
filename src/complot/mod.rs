@@ -116,14 +116,28 @@ pub trait Utils {
         )
     }
     fn xy_min(data: &[(f64, Vec<f64>)]) -> (f64, f64) {
-        data.iter().cloned().fold(
-            (f64::NEG_INFINITY, f64::NEG_INFINITY),
-            |(fx, fy), (x, y)| {
+        data.iter()
+            .cloned()
+            .fold((f64::INFINITY, f64::INFINITY), |(fx, fy), (x, y)| {
                 (
                     fx.min(x),
-                    fy.min(y.iter().cloned().fold(f64::NEG_INFINITY, |fy, y| fy.min(y))),
+                    fy.min(y.iter().cloned().fold(f64::INFINITY, |fy, y| fy.min(y))),
                 )
-            },
-        )
+            })
+    }
+    fn xy_range(data: &[(f64, Vec<f64>)]) -> (Range<f64>, Range<f64>) {
+        let (x_max, y_max) = Self::xy_max(data);
+        let (x_min, y_min) = Self::xy_min(data);
+        assert!(
+            x_max > x_min,
+            "Incorrect x axis range: {:?}",
+            [x_min, x_max]
+        );
+        assert!(
+            y_max > y_min,
+            "Incorrect y axis range: {:?}",
+            [y_min, y_max]
+        );
+        (x_min..x_max, y_min..y_max)
     }
 }

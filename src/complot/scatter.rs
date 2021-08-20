@@ -1,6 +1,6 @@
 use super::Config;
 use colorous;
-use plotters::{coord::types::RangedCoordf64, prelude::*};
+use plotters::prelude::*;
 
 pub struct Scatter {}
 
