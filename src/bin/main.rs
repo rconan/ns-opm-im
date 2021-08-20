@@ -7,14 +7,13 @@ use crseo::{
     shackhartmann::{Diffractive, Geometric, WavefrontSensorBuilder},
     Builder, Calibration, OpticalSensitivities, ShackHartmann, SH48,
 };
-use dosio::{io::jar, ios, Dos, IOVec, IO};
+use dosio::{ios, Dos, IOVec, IO};
 use fem::{dos::DiscreteStateSpace, FEM};
 use indicatif::ProgressBar;
 use m1_ctrl as m1;
 use mount_ctrl as mount;
 use nalgebra as na;
 use ns_opm_im::complot::{Axis, Combo, Complot, Config, Kind, Plot};
-use plotters::prelude::*;
 use simple_logger::SimpleLogger;
 use skyangle::Conversion;
 use std::{path::Path, time::Instant};
@@ -28,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut wind_loading = WindLoads::from_pickle(
         Path::new("data").join("b2019_0z_30az_os_7ms.wind_loads_1kHz_100-400s.pkl"),
     )?
-    .range(0.0, 2.0)
+    .range(0.0, 11.1)
     .truss()?
     .build()?;
 
@@ -51,8 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         M1Segment7AxialD
     );
     let sampling_rate = 1e3;
-    let m1_rbm_io = jar::OSSM1Lcl::io();
-    let m2_rbm_io = jar::MCM2Lcl6D::io();
+    let m1_rbm_io = ios!(OSSM1Lcl);
+    let m2_rbm_io = ios!(MCM2Lcl6D);
     let mut fem = {
         let fem = FEM::from_env()?;
         DiscreteStateSpace::from(fem)
@@ -107,19 +106,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    let data_rm: |…| -> {unknown} = |data: &mut Vec<IO<Vec<f64>>>, p: IO<()>| {data.remove(data.iter().position(|x: &{unknown}| *x == p).unwrap());};
 
     // CEO WFSS
-    let exposure_time = 1.0;
+    let exposure_time = 1.;
     let n_sensor = 1;
     let wfs_sample_rate = (exposure_time * sampling_rate) as usize;
-    let wfs_delay = sampling_rate as usize * 0;
-    let wfs_blueprint = SH48::<Geometric>::new().n_sensor(n_sensor);
-    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<Geometric>, SH48<Geometric>>::new()
-        .sensor(wfs_blueprint.clone())
+    let wfs_delay = sampling_rate as usize * 10;
+    type WFS_TYPE = Geometric;
+    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WFS_TYPE>, SH48<WFS_TYPE>>::new()
+        .sensor(SH48::<WFS_TYPE>::new().n_sensor(n_sensor))
         .build()?;
     println!("M1 mode: {}", gosm.gmt.get_m1_mode_type());
     println!("M2 mode: {}", gosm.gmt.get_m2_mode_type());
     println!("GS band: {}", gosm.src.get_photometric_band());
 
-    let mut gmt2wfs = Calibration::new(&gosm.gmt, &gosm.src, wfs_blueprint);
+    let mut gmt2wfs = Calibration::new(
+        &gosm.gmt,
+        &gosm.src,
+        SH48::<Geometric>::new().n_sensor(n_sensor),
+    );
     let mirror = vec![calibrations::Mirror::M2];
     let segments = vec![vec![calibrations::Segment::Rxyz(1e-6, Some(0..2))]; 7];
     let now = Instant::now();
@@ -133,6 +136,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let poke_sum = gmt2wfs.poke.from_dev().iter().sum::<f32>();
     println!("Poke sum: {}", poke_sum);
     let wfs_2_m2rxy = gmt2wfs.qr();
+    let mut m2_seg_rbm = vec![vec![0f64; 6]; 7];
+    m2_seg_rbm[1][3] = 1e-6;
+    m2_seg_rbm[4][4] = 1e-6;
+    m2_seg_rbm[6][3] = 1e-6;
+    m2_seg_rbm[6][4] = 1e-6;
+
+    let m2_rbm = ios!(MCM2Lcl6D(m2_seg_rbm.into_iter().flatten().collect()));
+    //    gosm.inputs(vec![m2_rbm.clone()]).unwrap().step();
+    let y = gosm
+        .in_step_out(Some(vec![m2_rbm.clone()]))
+        .map(|x| Into::<Option<Vec<f64>>>::into(x.unwrap()[0].clone()))
+        .unwrap()
+        .map(|x| x.into_iter().map(|x| x as f32).collect::<Vec<f32>>())
+        .unwrap();
+
+    let a = wfs_2_m2rxy.solve(&mut y.into());
+    Vec::<f32>::from(a)
+        .into_iter()
+        .map(|x| x * 1e6)
+        .collect::<Vec<f32>>()
+        .chunks(2)
+        .enumerate()
+        .for_each(|x| println!("#{}: [{:+0.1},{:+0.1}]", 1 + x.0, x.1[0], x.1[1]));
 
     let mut data_log = Vec::<f64>::with_capacity(wind_loading.n_sample * 23);
     let mut m2_log = Vec::<f64>::with_capacity(wind_loading.n_sample * 14);
@@ -264,15 +290,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pb.finish();
     let eta = now.elapsed();
     println!(
-        "{} sample wind loads played in {}ms ({}ms/step)",
+        "{} sample wind loads played in {}ms ({}/step)",
         wind_loading.n_sample,
         humantime::format_duration(eta),
         eta.as_millis() as f64 / wind_loading.n_sample as f64
     );
 
-    println!("m2_log: {}", m2_log.len());
-    println!("wfs_log: {}", wfs_log.len());
-
+    /*
+        println!("m2_log: {}", m2_log.len());
+        println!("wfs_log: {:#?}", wfs_log);
+        let u_f64 = m2_log.chunks(14).last().unwrap().to_vec();
+        let u_f32 = u_f64.iter().map(|&x| x as f32).collect::<Vec<f32>>();
+        println!("M2 rxy");
+        u_f64
+            .chunks(2)
+            .enumerate()
+            .for_each(|x| println!("#{}: [{:+0.1},{:+0.1}]", 1 + x.0, x.1[0], x.1[1]));
+        gosm.gmt.reset();
+        let y = gosm
+            .in_step_out(Some(vec![ios!(MCM2Lcl6D(u_f64))]))
+            .map(|x| Into::<Option<Vec<f64>>>::into(x.unwrap()[0].clone()))
+            .unwrap()
+            .map(|x| x.into_iter().map(|x| x as f32).collect::<Vec<f32>>())
+            .unwrap();
+        let a: Vec<f32> = wfs_2_m2rxy.solve(&mut y.into()).into();
+        a.into_iter()
+            .map(|x| x * 1e6)
+            .collect::<Vec<f32>>()
+            .chunks(2)
+            .enumerate()
+            .for_each(|x| println!("#{}: [{:+0.1},{:+0.1}]", 1 + x.0, x.1[0], x.1[1]));
+        //    println!("WFS M2 rxy: {:#?}", a);
+    */
     let (tilts, segments): (Vec<_>, Vec<_>) = data_log
         .into_iter()
         .collect::<Vec<f64>>()
@@ -282,7 +331,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (a.to_vec(), b.to_vec())
         })
         .unzip();
-    let (segments_piston, _segments_tilts): (Vec<_>, Vec<_>) = segments
+    let (segments_piston, segments_tilts): (Vec<_>, Vec<_>) = segments
         .into_iter()
         .flatten()
         .collect::<Vec<f64>>()
@@ -355,37 +404,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ));
 
-    let iter1: Vec<(f64, Vec<f64>)> = {
-        let data: Vec<_> = m2_log
-            .chunks(14)
-            .flat_map(|x| x.chunks(2).map(|x| x[0].hypot(x[1])).collect::<Vec<f64>>())
-            .collect();
-        data.chunks(7)
-            .enumerate()
-            .map(|(k, tilts)| {
-                (
-                    k as f64 / sampling_rate,
-                    tilts.iter().map(|x| x.to_mas()).collect::<Vec<f64>>(),
-                )
-            })
-            .collect()
-    };
-    let iter2: Vec<(f64, Vec<f64>)> = {
-        let data: Vec<_> = wfs_log
-            .chunks(14)
-            .flat_map(|x| x.chunks(2).map(|x| x[0].hypot(x[1])).collect::<Vec<f64>>())
-            .collect();
-        data.chunks(7)
-            .enumerate()
-            .map(|(k, tilts)| {
-                println!("k: {}", k);
-                (
-                    k as f64 / sampling_rate,
-                    tilts.iter().map(|x| x.to_mas()).collect::<Vec<f64>>(),
-                )
-            })
-            .collect()
-    };
+    let iter1: Vec<(f64, Vec<f64>)> = segments_tilts
+        .into_iter()
+        .flatten()
+        .collect::<Vec<f64>>()
+        .chunks(14)
+        //.flat_map(|x| x.chunks(2).map(|x| x[0].hypot(x[1])).collect::<Vec<f64>>())
+        .flat_map(|x| (0..7).map(|k| x[k].hypot(x[k + 7])).collect::<Vec<f64>>())
+        .collect::<Vec<f64>>()
+        .chunks(7)
+        .enumerate()
+        .map(|(k, tilts)| {
+            (
+                k as f64 / sampling_rate,
+                tilts.iter().map(|x| x.to_mas()).collect::<Vec<f64>>(),
+            )
+        })
+        .collect();
+    let iter2: Vec<(f64, Vec<f64>)> = wfs_log
+        .chunks(14)
+        .flat_map(|x| x.chunks(2).map(|x| x[0].hypot(x[1])).collect::<Vec<f64>>())
+        .collect::<Vec<f64>>()
+        .chunks(7)
+        .enumerate()
+        .map(|(k, tilts)| {
+            (
+                (k * wfs_sample_rate + wfs_delay) as f64 / sampling_rate,
+                tilts
+                    .iter()
+                    .map(|x| 0.25 * x.to_mas())
+                    .collect::<Vec<f64>>(),
+            )
+        })
+        .collect();
 
     <Combo as From<Complot>>::from((
         vec![Box::new(iter1.into_iter()), Box::new(iter2.into_iter())],
@@ -393,9 +444,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(
             Config::new()
                 .filename("ns-opm-im_m2-rxy.svg")
-                .xaxis(Axis::new().label("Time [s]").range(0f64..2f64))
-                .yaxis(Axis::new().label("M2 Rxy [mas]").range(0f64..1000f64)),
+                .xaxis(Axis::new().label("Time [s]").range(0f64..20f64))
+                .yaxis(
+                    Axis::new()
+                        .label("Segment tip-tilt mag. [mas]")
+                        .range(0f64..350f64),
+                ),
         ),
     ));
+
     Ok(())
 }
