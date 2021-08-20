@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut wind_loading = WindLoads::from_pickle(
         Path::new("data").join("b2019_0z_30az_os_7ms.wind_loads_1kHz_100-400s.pkl"),
     )?
-    .range(0.0, 11.1)
+    .range(0.0, 20.0)
     .truss()?
     .build()?;
 
@@ -438,19 +438,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
+    let mut config = Config::new()
+        .filename("ns-opm-im_m2-rxy.svg")
+        .xaxis(Axis::new().label("Time [s]"))
+        .yaxis(Axis::new().label("Segment tip-tilt mag. [mas]"));
+    config.auto_range(vec![&iter1, &iter2]);
     <Combo as From<Complot>>::from((
         vec![Box::new(iter1.into_iter()), Box::new(iter2.into_iter())],
         vec![Kind::Plot, Kind::Scatter],
-        Some(
-            Config::new()
-                .filename("ns-opm-im_m2-rxy.svg")
-                .xaxis(Axis::new().label("Time [s]").range(0f64..20f64))
-                .yaxis(
-                    Axis::new()
-                        .label("Segment tip-tilt mag. [mas]")
-                        .range(0f64..350f64),
-                ),
-        ),
+        Some(config),
     ));
 
     Ok(())
