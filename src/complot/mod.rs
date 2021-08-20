@@ -102,6 +102,21 @@ impl<'a> Config<'a> {
             ..self
         }
     }
+    pub fn auto_range(&mut self, iters: Vec<&[(f64, Vec<f64>)]>) -> &mut Self {
+        let mut xrange = f64::INFINITY..f64::NEG_INFINITY;
+        let mut yrange = f64::INFINITY..f64::NEG_INFINITY;
+        for iter in &iters {
+            let xy = *iter;
+            let (it_xrange, it_yrange) = Plot::xy_range(&xy);
+            xrange.start = xrange.start.min(it_xrange.start);
+            xrange.end = xrange.end.max(it_xrange.end);
+            yrange.start = yrange.start.min(it_yrange.start);
+            yrange.end = yrange.end.max(it_yrange.end);
+        }
+        self.xaxis = self.xaxis.clone().range(xrange);
+        self.yaxis = self.yaxis.clone().range(yrange);
+        self
+    }
 }
 pub trait Utils {
     fn xy_max(data: &[(f64, Vec<f64>)]) -> (f64, f64) {
