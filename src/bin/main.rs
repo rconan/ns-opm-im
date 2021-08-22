@@ -9,7 +9,7 @@ use crseo::{
 };
 use dosio::{ios, Dos, IOVec, IO};
 use fem::{dos::DiscreteStateSpace, FEM};
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use m1_ctrl as m1;
 use mount_ctrl as mount;
 use nalgebra as na;
@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut wind_loading = WindLoads::from_pickle(
         Path::new("data").join("b2019_0z_30az_os_7ms.wind_loads_1kHz_100-400s.pkl"),
     )?
-    .range(0.0, 20.0)
+    .range(0.0, 200.0)
     .truss()?
     .build()?;
 
@@ -106,13 +106,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    let data_rm: |…| -> {unknown} = |data: &mut Vec<IO<Vec<f64>>>, p: IO<()>| {data.remove(data.iter().position(|x: &{unknown}| *x == p).unwrap());};
 
     // CEO WFSS
-    let exposure_time = 1.;
+    let exposure_time = 10.;
     let n_sensor = 1;
     let wfs_sample_rate = (exposure_time * sampling_rate) as usize;
     let wfs_delay = sampling_rate as usize * 10;
-    type WFS_TYPE = Geometric;
+    type WFS_TYPE = Diffractive;
     let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WFS_TYPE>, SH48<WFS_TYPE>>::new()
         .sensor(SH48::<WFS_TYPE>::new().n_sensor(n_sensor))
+        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
+            26.,
+            520,
+            0.,
+            25.,
+            Some("ns-opm-im_atm.bin".to_string()),
+            Some(8),
+        ))
         .build()?;
     println!("M1 mode: {}", gosm.gmt.get_m1_mode_type());
     println!("M2 mode: {}", gosm.gmt.get_m2_mode_type());
@@ -126,7 +134,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mirror = vec![calibrations::Mirror::M2];
     let segments = vec![vec![calibrations::Segment::Rxyz(1e-6, Some(0..2))]; 7];
     let now = Instant::now();
-    gmt2wfs.calibrate(mirror, segments, Some(0.8));
+    gmt2wfs.calibrate(
+        mirror,
+        segments,
+        calibrations::ValidLensletCriteria::OtherSensor(&mut gosm.sensor),
+    );
     println!(
         "GTM 2 WFS calibration [{}x{}] in {}s",
         gmt2wfs.n_data,
@@ -167,6 +179,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut m1_axial = Vec::<f64>::with_capacity(wind_loading.n_sample * 7);
 
     let pb = ProgressBar::new(wind_loading.n_sample as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:60.cyan/blue} {pos:>7}/{len:7}")
+            .progress_chars("=|-"),
+    );
     let now = Instant::now();
     let mut m1_actuators: Option<Vec<IO<Vec<f64>>>> = None;
     let mut k = 0;
@@ -204,6 +221,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         // WFSing
         let m2_rxy: Option<Vec<f32>> = if k >= wfs_delay {
+            if let Some(ref mut atm) = gosm.atm {
+                atm.secs = k as f64 / sampling_rate;
+            }
             gosm.inputs(Some(vec![
                 fem_outputs[ios!(OSSM1Lcl)].clone(),
                 fem_outputs[ios!(MCM2Lcl6D)].clone(),
@@ -290,7 +310,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pb.finish();
     let eta = now.elapsed();
     println!(
-        "{} sample wind loads played in {}ms ({}/step)",
+        "{} sample wind loads played in [{}] ({}ms/step)",
         wind_loading.n_sample,
         humantime::format_duration(eta),
         eta.as_millis() as f64 / wind_loading.n_sample as f64
