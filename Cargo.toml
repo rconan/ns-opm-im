@@ -3,6 +3,9 @@ name = "ns-opm-im"
 version = "0.1.0"
 edition = "2018"
 
+[workspace]
+members = ["fsm"]
+
 [dependencies]
 colorous = "1.0.5"
 crseo = { git = "https://github.com/rconan/crseo.git", branch = "ns-opm-im", features = ["dos"] }
@@ -21,6 +24,7 @@ structopt = "0.3.22"
 triangle-rs = { git = "https://github.com/rconan/triangle-rs.git", branch = "main" }
 windloading = { git = "https://github.com/rconan/windloading.git", branch = "ns-opm-im" }
 zernike = { git = "https://github.com/rconan/zernike.git", branch = "main" }
+fsm = { path = "fsm"}
 
 [dev-dependencies]
 criterion = "0.3"
