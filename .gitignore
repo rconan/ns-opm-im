@@ -3,6 +3,7 @@ Cargo.lock
 *.png
 *.svg
 *.bin
+*.pkl
 *~
 /data
 /report

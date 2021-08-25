@@ -130,10 +130,10 @@ extern RT_MODEL_M2_POS_Control_T *const M2_POS_Control_M;
 
 impl<'a> IOTags for Controller<'a> {
     fn outputs_tags(&self) -> Vec<Tags> {
-        vec![ios!(M2posactF)]
+        vec![ios!(MCM2SmHexF)]
     }
     fn inputs_tags(&self) -> Vec<Tags> {
-        ios!(M2poscmd, M2posFB)
+        ios!(M2poscmd, MCM2SmHexD)
     }
 }
 impl<'a> Dos for Controller<'a> {
@@ -145,12 +145,13 @@ impl<'a> Dos for Controller<'a> {
                 if let Some(
                     [IO::M2poscmd {
                         data: Some(m2_pos_cmd),
-                    }, IO::M2posFB {
+                    }, IO::MCM2SmHexD {
                         data: Some(m2_pos_fb),
                     }],
-                ) = <Vec<IO<Vec<f64>>> as IOVec>::pop_these(&mut data, ios!(M2poscmd, M2posFB))
-                    .as_ref()
-                    .map(|x| x.as_slice())
+                ) =
+                    <Vec<IO<Vec<f64>>> as IOVec>::pop_these(&mut data, ios!(M2poscmd, MCM2SmHexD))
+                        .as_ref()
+                        .map(|x| x.as_slice())
                 {
                     for (k, &v) in m2_pos_cmd.into_iter().enumerate() {
                         self.m2_pos_cmd[k] = v;
@@ -161,7 +162,7 @@ impl<'a> Dos for Controller<'a> {
                     Ok(self)
                 } else {
                     Err(DOSIOSError::Inputs(
-                        "FSM positioner M2poscmd and M2posFB not found".into(),
+                        "FSM positioner M2poscmd and MCM2SmHexD not found".into(),
                     ))
                 }
             }
@@ -171,9 +172,7 @@ impl<'a> Dos for Controller<'a> {
         }
     }
     fn outputs(&mut self) -> Option<Vec<IO<Self::Output>>> {
-        Some(vec![IO::M2posactF {
-            data: Some(Vec::<f64>::from(&self.m2_pos_act_f)),
-        }])
+        Some(vec![ios!(MCM2SmHexF(Vec::<f64>::from(&self.m2_pos_act_f)))])
     }
 }
 
@@ -186,7 +185,7 @@ mod tests {
         let mut ctrlr = Controller::new();
         let u = ios!(
             M2poscmd(vec![0f64; 42]),
-            M2posFB({
+            MCM2SmHexD({
                 let mut v = vec![0f64; 84];
                 v[0] = 1e-6;
                 v[1] = -1e-6;

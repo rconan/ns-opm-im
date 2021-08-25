@@ -25,6 +25,7 @@ triangle-rs = { git = "https://github.com/rconan/triangle-rs.git", branch = "mai
 windloading = { git = "https://github.com/rconan/windloading.git", branch = "ns-opm-im" }
 zernike = { git = "https://github.com/rconan/zernike.git", branch = "main" }
 fsm = { path = "fsm"}
+serde-pickle = "0.6.2"
 
 [dev-dependencies]
 criterion = "0.3"

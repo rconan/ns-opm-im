@@ -198,10 +198,10 @@ extern RT_MODEL_M2_PZT_Control_T *const M2_PZT_Control_M;
 
 impl<'a> IOTags for Controller<'a> {
     fn outputs_tags(&self) -> Vec<Tags> {
-        vec![ios!(PZTF)]
+        vec![ios!(MCM2PZTF)]
     }
     fn inputs_tags(&self) -> Vec<Tags> {
-        ios!(TTcmd, PZTFB)
+        ios!(TTcmd, MCM2PZTD)
     }
 }
 impl<'a> Dos for Controller<'a> {
@@ -210,10 +210,11 @@ impl<'a> Dos for Controller<'a> {
     fn inputs(&mut self, data: Option<Vec<IO<Self::Input>>>) -> Result<&mut Self, DOSIOSError> {
         match data {
             Some(mut data) => {
-                if let Some([IO::TTcmd { data: Some(tt_cmd) }, IO::PZTFB { data: Some(pzt_fb) }]) =
-                    <Vec<IO<Vec<f64>>> as IOVec>::pop_these(&mut data, ios!(TTcmd, PZTFB))
-                        .as_ref()
-                        .map(|x| x.as_slice())
+                if let Some(
+                    [IO::TTcmd { data: Some(tt_cmd) }, IO::MCM2PZTD { data: Some(pzt_fb) }],
+                ) = <Vec<IO<Vec<f64>>> as IOVec>::pop_these(&mut data, ios!(TTcmd, MCM2PZTD))
+                    .as_ref()
+                    .map(|x| x.as_slice())
                 {
                     for (k, &v) in tt_cmd.into_iter().enumerate() {
                         self.tt_cmd[k] = v;
@@ -234,9 +235,7 @@ impl<'a> Dos for Controller<'a> {
         }
     }
     fn outputs(&mut self) -> Option<Vec<IO<Self::Output>>> {
-        Some(vec![IO::PZTF {
-            data: Some(Vec::<f64>::from(&self.pzt_f)),
-        }])
+        Some(vec![ios!(MCM2PZTF(Vec::<f64>::from(&self.pzt_f)))])
     }
 }
 
@@ -249,7 +248,7 @@ mod tests {
         let mut ctrlr = Controller::new();
         let u = ios!(
             TTcmd(vec![0f64; 21]),
-            PZTFB({
+            MCM2PZTD({
                 let mut v = vec![0f64; 42];
                 v[0] = 1e-6;
                 //                v[1] = -1e-6;
