@@ -225,7 +225,7 @@ impl<'a> Dos for Controller<'a> {
                     Ok(self)
                 } else {
                     Err(DOSIOSError::Inputs(
-                        "FSM positioner TTcmd and PZTFB not found".into(),
+                        "FSM piezostack TTcmd and MCM2PZTD not found".into(),
                     ))
                 }
             }

@@ -29,6 +29,7 @@ serde-pickle = "0.6.2"
 
 [dev-dependencies]
 criterion = "0.3"
+mat73 = { path = "/home/rconan/projects/mat73/" }
 
 [[bench]]
 name = "benchmark"

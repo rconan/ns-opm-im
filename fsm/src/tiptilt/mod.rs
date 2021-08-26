@@ -161,7 +161,7 @@ impl<'a> Dos for Controller<'a> {
         }
     }
     fn outputs(&mut self) -> Option<Vec<IO<Self::Output>>> {
-        Some(vec![IO::PZTF {
+        Some(vec![IO::TTcmd {
             data: Some(Vec::<f64>::from(&self.tt_cmd)),
         }])
     }

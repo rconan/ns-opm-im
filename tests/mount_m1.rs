@@ -164,6 +164,7 @@ fn mount_m1_constants() {
     .proportional_damping(2. / 100.)
     .inputs_from(&mnt_drives)
     .inputs_from(&m1_hardpoints)
+    .inputs(vec![ios!(OSSM1Lcl6F)])
     .inputs(ios!(
         M1ActuatorsSegment1,
         M1ActuatorsSegment2,
