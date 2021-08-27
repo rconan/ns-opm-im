@@ -1,4 +1,4 @@
-use dosio::{ios, Dos, DosVec, IOVec, IO};
+use dosio::{ios, Dos, IOVec, IO};
 use fem::{dos::DiscreteStateSpace, FEM};
 use m1_ctrl as m1;
 use mount_ctrl as mount;
@@ -543,6 +543,8 @@ fn mount_m1_m2_constant_fsmpospzt() {
     let mut fsm_positionner_forces = Some(vec![ios!(MCM2SmHexF(vec![0f64; 84]))]);
     let mut fsm_piezostack_forces = Some(vec![ios!(MCM2PZTF(vec![0f64; 42]))]);
 
+    let mut fem_outputs = vec![];
+
     let n_step = 30_000;
     let mut m1_logs = Vec::<Vec<f64>>::with_capacity(n_step * 42);
     let mut m2_logs = Vec::<Vec<f64>>::with_capacity(n_step * 42);
@@ -564,30 +566,32 @@ fn mount_m1_m2_constant_fsmpospzt() {
         fsm_piezostack_forces.as_mut().map(|x| {
             fem_forces.append(x);
         });
-        let mut fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
+        fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
         // MOUNT
-        mount_drives_forces = DosVec::<IO<Vec<f64>>>::pop_these(
-            &mut fem_outputs,
-            ios!(OSSElEncoderAngle, OSSAzEncoderAngle, OSSRotEncoderAngle),
-        )
-        .and_then(|mut mnt_encdr| {
-            mnt_ctrl
-                .in_step_out(Some(mnt_encdr.clone()))
-                .unwrap()
-                .and_then(|mut mnt_cmd| {
-                    mnt_cmd.append(&mut mnt_encdr);
-                    mnt_drives.in_step_out(Some(mnt_cmd)).unwrap()
-                })
-        });
-        // M1
-        let mut m1_hp_lc =
-            DosVec::<IO<Vec<f64>>>::pop_these(&mut fem_outputs, vec![ios!(OSSHardpointD)])
-                .and_then(|mut hp_d| {
-                    m1_hardpoints_forces.as_mut().and_then(|hp_f| {
-                        hp_d.append(hp_f);
-                        m1_load_cells.in_step_out(Some(hp_d)).unwrap()
+        mount_drives_forces = fem_outputs
+            .pop_these(ios!(
+                OSSElEncoderAngle,
+                OSSAzEncoderAngle,
+                OSSRotEncoderAngle
+            ))
+            .and_then(|mut mnt_encdr| {
+                mnt_ctrl
+                    .in_step_out(Some(mnt_encdr.clone()))
+                    .unwrap()
+                    .and_then(|mut mnt_cmd| {
+                        mnt_cmd.append(&mut mnt_encdr);
+                        mnt_drives.in_step_out(Some(mnt_cmd)).unwrap()
                     })
-                });
+            });
+        // M1
+        let m1_hp_lc = fem_outputs
+            .pop_these(vec![ios!(OSSHardpointD)])
+            .and_then(|mut hp_d| {
+                m1_hardpoints_forces.as_mut().and_then(|hp_f| {
+                    hp_d.append(hp_f);
+                    m1_load_cells.in_step_out(Some(hp_d)).unwrap()
+                })
+            });
         if k % 10 == 0 {
             m1_actuators_forces = m1_hp_lc.and_then(|mut hp_lc| {
                 hp_lc.append(&mut m1_bending_modes.clone());
@@ -600,20 +604,20 @@ fn mount_m1_m2_constant_fsmpospzt() {
         // M2
         //  - positioner
         fsm_positionner_forces =
-            DosVec::<IO<Vec<f64>>>::pop_these(&mut fem_outputs, vec![ios!(MCM2SmHexD)]).and_then(
-                |mut hex_d| {
+            fem_outputs
+                .pop_these(vec![ios!(MCM2SmHexD)])
+                .and_then(|mut hex_d| {
                     hex_d.append(&mut vec![ios!(M2poscmd(vec![0f64; 42]))]);
                     fsm_positionner.in_step_out(Some(hex_d)).unwrap()
-                },
-            );
+                });
         //  - piezostack
         fsm_piezostack_forces =
-            DosVec::<IO<Vec<f64>>>::pop_these(&mut fem_outputs, vec![ios!(MCM2PZTD)]).and_then(
-                |mut pzt_d| {
+            fem_outputs
+                .pop_these(vec![ios!(MCM2PZTD)])
+                .and_then(|mut pzt_d| {
                     pzt_d.append(&mut vec![ios!(TTcmd(pzt_cmd.clone()))]);
                     fsm_piezostack.in_step_out(Some(pzt_d)).unwrap()
-                },
-            );
+                });
         // LOGS
         Option::<Vec<f64>>::from(&fem_outputs[ios!(OSSM1Lcl)]).map(|x| m1_logs.push(x));
         Option::<Vec<f64>>::from(&fem_outputs[ios!(MCM2Lcl6D)]).map(|x| m2_logs.push(x));
