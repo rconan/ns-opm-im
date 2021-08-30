@@ -1,4 +1,4 @@
-use dosio::{ios, Dos, DosVec, IOVec, IO};
+use dosio::{ios, Dos, IOVec, IO};
 use fem::{dos::DiscreteStateSpace, FEM};
 use m1_ctrl as m1;
 use mat73;
@@ -38,12 +38,10 @@ fn fsm_constant_pos() {
         });
         let mut fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
         // M2
-        let data = DosVec::<IO<Vec<f64>>>::pop_these(&mut fem_outputs, vec![ios!(MCM2SmHexD)]).map(
-            |mut x| {
-                x.append(&mut vec![ios!(M2poscmd(vec![1e-6; 42]))]);
-                x
-            },
-        );
+        let data = fem_outputs.pop_these(vec![ios!(MCM2SmHexD)]).map(|mut x| {
+            x.append(&mut vec![ios!(M2poscmd(vec![1e-6; 42]))]);
+            x
+        });
         fsm_positionner_forces = fsm_positionner.in_step_out(data).unwrap();
         // LOGS
         Option::<Vec<f64>>::from(&fem_outputs[ios!(OSSM1Lcl)]).map(|x| m1_logs.push(x));
@@ -113,12 +111,10 @@ fn fsm_constant_pzt() {
         });
         let mut fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
         // M2
-        let data = DosVec::<IO<Vec<f64>>>::pop_these(&mut fem_outputs, vec![ios!(MCM2PZTD)]).map(
-            |mut x| {
-                x.append(&mut vec![ios!(TTcmd(pzt_cmd.clone()))]);
-                x
-            },
-        );
+        let data = fem_outputs.pop_these(vec![ios!(MCM2PZTD)]).map(|mut x| {
+            x.append(&mut vec![ios!(TTcmd(pzt_cmd.clone()))]);
+            x
+        });
         fsm_piezostack_forces = fsm_piezostack.in_step_out(data).unwrap();
         // LOGS
         Option::<Vec<f64>>::from(&fem_outputs[ios!(OSSM1Lcl)]).map(|x| m1_logs.push(x));
@@ -181,12 +177,12 @@ fn fsm_constant_tiptiltpzt() {
             .in_step_out(Some(ios!(TTSP(vec![1e-6]), TTFB(vec![0f64; 14]))))
             .unwrap()
             .map(|mut tt_cmd| {
-                DosVec::<IO<Vec<f64>>>::pop_these(&mut fem_outputs, vec![ios!(MCM2PZTD)]).map(
-                    |mut pzt_fb| {
+                fem_outputs
+                    .pop_these(vec![ios!(MCM2PZTD)])
+                    .map(|mut pzt_fb| {
                         tt_cmd.append(&mut pzt_fb);
                         tt_cmd
-                    },
-                )
+                    })
             })
             .flatten();
         fsm_piezostack_forces = fsm_piezostack.in_step_out(data).unwrap();

@@ -2,6 +2,8 @@ use dosio::{ios, Dos, IOVec, IO};
 use fem::{dos::DiscreteStateSpace, FEM};
 use m1_ctrl as m1;
 use mount_ctrl as mount;
+use nalgebra as na;
+use ns_opm_im::optical_sensitivities::{from_opticals, Bin, OpticalSensitivities};
 use serde_pickle as pkl;
 use skyangle::Conversion;
 use std::fs::File;
@@ -543,32 +545,31 @@ fn mount_m1_m2_constant_fsmpospzt() {
     let mut fsm_positionner_forces = Some(vec![ios!(MCM2SmHexF(vec![0f64; 84]))]);
     let mut fsm_piezostack_forces = Some(vec![ios!(MCM2PZTF(vec![0f64; 42]))]);
 
-    let mut fem_outputs = vec![];
+    let mut fem_forces = vec![];
+    mount_drives_forces.as_mut().map(|x| {
+        fem_forces.append(x);
+    });
+    m1_hardpoints_forces.as_mut().map(|x| {
+        fem_forces.extend_from_slice(x);
+    });
+    m1_actuators_forces.as_mut().map(|x| {
+        fem_forces.extend_from_slice(x);
+    });
+    fsm_positionner_forces.as_mut().map(|x| {
+        fem_forces.append(x);
+    });
+    fsm_piezostack_forces.as_mut().map(|x| {
+        fem_forces.append(x);
+    });
+    let mut fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
 
     let n_step = 30_000;
     let mut m1_logs = Vec::<Vec<f64>>::with_capacity(n_step * 42);
     let mut m2_logs = Vec::<Vec<f64>>::with_capacity(n_step * 42);
     for k in 0..n_step {
-        // FEM
         let mut fem_forces = vec![];
-        mount_drives_forces.as_mut().map(|x| {
-            fem_forces.append(x);
-        });
-        m1_hardpoints_forces.as_mut().map(|x| {
-            fem_forces.extend_from_slice(x);
-        });
-        m1_actuators_forces.as_mut().map(|x| {
-            fem_forces.extend_from_slice(x);
-        });
-        fsm_positionner_forces.as_mut().map(|x| {
-            fem_forces.append(x);
-        });
-        fsm_piezostack_forces.as_mut().map(|x| {
-            fem_forces.append(x);
-        });
-        fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
         // MOUNT
-        mount_drives_forces = fem_outputs
+        fem_outputs
             .pop_these(ios!(
                 OSSElEncoderAngle,
                 OSSAzEncoderAngle,
@@ -582,47 +583,76 @@ fn mount_m1_m2_constant_fsmpospzt() {
                         mnt_cmd.append(&mut mnt_encdr);
                         mnt_drives.in_step_out(Some(mnt_cmd)).unwrap()
                     })
+            })
+            .map(|mut mount_drives_forces| {
+                fem_forces.append(&mut mount_drives_forces);
             });
         // M1
-        let m1_hp_lc = fem_outputs
-            .pop_these(vec![ios!(OSSHardpointD)])
-            .and_then(|mut hp_d| {
-                m1_hardpoints_forces.as_mut().and_then(|hp_f| {
-                    hp_d.append(hp_f);
-                    m1_load_cells.in_step_out(Some(hp_d)).unwrap()
-                })
-            });
         if k % 10 == 0 {
+            let m1_hp_lc = fem_outputs
+                .pop_these(vec![ios!(OSSHardpointD)])
+                .and_then(|mut hp_d| {
+                    m1_hardpoints_forces.as_mut().and_then(|hp_f| {
+                        hp_d.append(hp_f);
+                        m1_load_cells.in_step_out(Some(hp_d)).unwrap()
+                    })
+                });
             m1_actuators_forces = m1_hp_lc.and_then(|mut hp_lc| {
                 hp_lc.append(&mut m1_bending_modes.clone());
                 m1_actuators.in_step_out(Some(hp_lc)).unwrap()
             });
         };
+        m1_actuators_forces.as_mut().map(|x| {
+            fem_forces.extend_from_slice(x);
+        });
         m1_hardpoints_forces = m1_hardpoints
             .in_step_out(Some(vec![ios!(M1RBMcmd(vec![0f64; 42]))]))
             .unwrap();
+        m1_hardpoints_forces.as_mut().map(|x| {
+            fem_forces.extend_from_slice(x);
+        });
         // M2
         //  - positioner
-        fsm_positionner_forces =
-            fem_outputs
-                .pop_these(vec![ios!(MCM2SmHexD)])
-                .and_then(|mut hex_d| {
-                    hex_d.append(&mut vec![ios!(M2poscmd(vec![0f64; 42]))]);
-                    fsm_positionner.in_step_out(Some(hex_d)).unwrap()
-                });
+        fem_outputs
+            .pop_these(vec![ios!(MCM2SmHexD)])
+            .and_then(|mut hex_d| {
+                hex_d.append(&mut vec![ios!(M2poscmd(vec![0f64; 42]))]);
+                fsm_positionner.in_step_out(Some(hex_d)).unwrap()
+            })
+            .map(|mut fsm_positionner_forces| {
+                fem_forces.append(&mut fsm_positionner_forces);
+            });
         //  - piezostack
-        fsm_piezostack_forces =
-            fem_outputs
-                .pop_these(vec![ios!(MCM2PZTD)])
-                .and_then(|mut pzt_d| {
-                    pzt_d.append(&mut vec![ios!(TTcmd(pzt_cmd.clone()))]);
-                    fsm_piezostack.in_step_out(Some(pzt_d)).unwrap()
-                });
+        fem_outputs
+            .pop_these(vec![ios!(MCM2PZTD)])
+            .and_then(|mut pzt_d| {
+                pzt_d.append(&mut vec![ios!(TTcmd(pzt_cmd.clone()))]);
+                fsm_piezostack.in_step_out(Some(pzt_d)).unwrap()
+            })
+            .map(|mut fsm_piezostack_forces| {
+                fem_forces.append(&mut fsm_piezostack_forces);
+            });
+        // FEM
+        fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
         // LOGS
         Option::<Vec<f64>>::from(&fem_outputs[ios!(OSSM1Lcl)]).map(|x| m1_logs.push(x));
         Option::<Vec<f64>>::from(&fem_outputs[ios!(MCM2Lcl6D)]).map(|x| m2_logs.push(x));
     }
 
+    let opticals = from_opticals(&{ OpticalSensitivities::load().unwrap() }[3..4]);
+    let segment_tiptilt: Vec<_> = m1_logs
+        .iter()
+        .zip(m2_logs.iter())
+        .map(|(m1_rbm, m2_rbm)| {
+            let rbm = na::DVector::from_iterator(
+                84,
+                m1_rbm.iter().cloned().chain(m2_rbm.iter().cloned()),
+            );
+            let stt = &opticals * rbm;
+            stt.as_slice().to_vec()
+        })
+        .collect();
+
     let mut file = File::create("tests/tests_mount-m1-m2_constant-fsmpospzt.pkl").unwrap();
-    pkl::to_writer(&mut file, &(m1_logs, m2_logs), true).unwrap();
+    pkl::to_writer(&mut file, &(m1_logs, m2_logs, segment_tiptilt), true).unwrap();
 }
