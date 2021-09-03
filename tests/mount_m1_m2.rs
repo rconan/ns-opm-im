@@ -561,13 +561,13 @@ fn mount_m1_m2_constant_fsmpospzt() {
     fsm_piezostack_forces.as_mut().map(|x| {
         fem_forces.append(x);
     });
+    let n_fem_forces = fem_forces.len();
     let mut fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
-
     let n_step = 30_000;
     let mut m1_logs = Vec::<Vec<f64>>::with_capacity(n_step * 42);
     let mut m2_logs = Vec::<Vec<f64>>::with_capacity(n_step * 42);
     for k in 0..n_step {
-        let mut fem_forces = vec![];
+        let mut fem_forces = Vec::<IO<Vec<f64>>>::with_capacity(n_fem_forces);
         // MOUNT
         fem_outputs
             .pop_these(ios!(
@@ -589,18 +589,18 @@ fn mount_m1_m2_constant_fsmpospzt() {
             });
         // M1
         if k % 10 == 0 {
-            let m1_hp_lc = fem_outputs
+            m1_actuators_forces = fem_outputs
                 .pop_these(vec![ios!(OSSHardpointD)])
                 .and_then(|mut hp_d| {
                     m1_hardpoints_forces.as_mut().and_then(|hp_f| {
                         hp_d.append(hp_f);
                         m1_load_cells.in_step_out(Some(hp_d)).unwrap()
                     })
-                });
-            m1_actuators_forces = m1_hp_lc.and_then(|mut hp_lc| {
-                hp_lc.append(&mut m1_bending_modes.clone());
-                m1_actuators.in_step_out(Some(hp_lc)).unwrap()
-            });
+                })
+                .and_then(|mut hp_lc| {
+                    hp_lc.append(&mut m1_bending_modes.clone());
+                    m1_actuators.in_step_out(Some(hp_lc)).unwrap()
+                })
         };
         m1_actuators_forces.as_mut().map(|x| {
             fem_forces.extend_from_slice(x);
