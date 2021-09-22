@@ -26,6 +26,7 @@ fn mount_m1_m2_tiptilt_constant() {
     let sampling_rate = 1e3;
     let mut fem = {
         let fem = FEM::from_env().unwrap();
+        println!("FEM:\n{}", fem);
         DiscreteStateSpace::from(fem)
     }
     .sampling(sampling_rate)

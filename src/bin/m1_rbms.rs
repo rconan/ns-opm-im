@@ -1,7 +1,7 @@
+use complot::{tri, Config};
 use fem::FEM;
 use geotrans::{Quaternion, Vector};
 use nalgebra as na;
-use ns_opm_im::complot::{tri, Config};
 use skyangle::Conversion;
 use std::error::Error;
 use triangle_rs as triangle;
