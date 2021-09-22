@@ -16,7 +16,6 @@ humantime = "2.1.0"
 indicatif = "0.16.2"
 m1-ctrl = { git = "https://github.com/rconan/m1-ctrl.git", branch = "ns-opm-im" }
 mount-ctrl = { git = "https://github.com/rconan/mount-ctrl.git", branch = "ns-opm-im" }
-nalgebra = "0.28.0"
 plotters = "0.3.1"
 simple_logger = "1.12.1"
 skyangle = { git = "https://github.com/rconan/skyangle.git", branch = "main" }
@@ -29,6 +28,12 @@ serde-pickle = "0.6.2"
 thiserror = "1.0.28"
 serde = { version = "1.0.130", features = ["derive"] }
 bincode = "1.3.3"
+rand = "0.8.4"
+rand_distr = "0.4.1"
+rayon = "1.5.1"
+nalgebra = "0.29.0"
+spade = "1.8.2"
+complot = { git = "https://github.com/rconan/complot.git", branch = "ns-opm-im" }
 
 [dev-dependencies]
 criterion = "0.3"
