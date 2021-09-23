@@ -37,7 +37,7 @@ complot = { git = "https://github.com/rconan/complot.git", branch = "ns-opm-im" 
 
 [dev-dependencies]
 criterion = "0.3"
-mat73 = { path = "/home/rconan/projects/mat73/" }
+mat73 = { git = "https://github.com/rconan/mat73.git", branch = "main" }
 
 [[bench]]
 name = "benchmark"
