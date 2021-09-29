@@ -53,6 +53,8 @@ pub struct QP<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, 
     /// segment bending modes coefficients to segment actuators forces  (column wise) as ([data],[n_rows])
     #[serde(skip)]
     coefs2forces: (&'a [Vec<f64>], Vec<usize>),
+    #[serde(skip)]
+    verbose: bool,
 }
 
 impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE: usize>
@@ -71,10 +73,13 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
         );
         let file = File::open(qp_filename)?;
         let rdr = BufReader::with_capacity(10_000, file);
-        let mut this: Self = pickle::from_reader(rdr, Default::default())?;
-        this.dmat = calib_matrix;
-        this.coefs2forces = coefs2forces;
-        Ok(this)
+        let this: Self = pickle::from_reader(rdr, Default::default())?;
+        Ok(Self {
+            dmat: calib_matrix,
+            coefs2forces,
+            verbose: false,
+            ..this
+        })
     }
     /// Computes the control balance weighting matrix
     fn balance_weighting(&self) -> DynMatrix {
@@ -85,7 +90,6 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
             .iter()
             .zip(n_actuators.iter())
             .map(|(c2f, &n)| DMatrix::from_column_slice(n, c2f.len() / n, c2f) * fz)
-            .inspect(|x| println!("{:?}", x.shape()))
             .collect();
         //    println!("coefs2forces: {:?}", coefs2force.shape());
         let tu_nrows = M1_RBM * M2_RBM + n_actuators_sum;
@@ -111,6 +115,10 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
         }
         tu
     }
+    /// Sets OSQP verbosity
+    pub fn verbose(self, verbose: bool) -> Self {
+        Self { verbose, ..self }
+    }
     /// Builds the quadratic programming problem
     pub fn build(self) -> ActiveOptics<M1_RBM, M2_RBM, M1_BM, N_MODE> {
         let (dmat, n_mode) = self.dmat;
@@ -126,20 +134,7 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
         };
         // Extract the upper triangular elements of `P`
         let p_utri = {
-            println!("rho_3:{}", self.data.rho_3);
             let p = d_t_w1_d + w2 + w3.scale(self.data.rho_3 * self.data.k * self.data.k);
-
-            // Check matrix density
-            let p_nnz = p
-                .as_slice()
-                .iter()
-                .filter_map(|&p| if p != 0.0 { Some(1.0) } else { None })
-                .sum::<f64>();
-            println!(
-                "P: {:?}, density: {}%",
-                p.shape(),
-                100. * p_nnz / (p.ncols() * p.nrows()) as f64
-            );
             CscMatrix::from_column_iter_dense(
                 p.nrows(),
                 p.ncols(),
@@ -151,30 +146,13 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
         let tu = self.balance_weighting();
 
         let a_in = {
-            //println!("count nonzero: {}", self.data.tu.iter().filter(|&n| *n != 0.0).count());
             let tus = tu.scale(self.data.k);
-            let tu_nnz = tus.as_slice().iter().fold(0.0, |mut s, p| {
-                if *p != 0.0 {
-                    s += 1.0;
-                };
-                s
-            });
-            println!(
-                "Tu: {:?}, nnz: {}, density: {:.0}%",
-                tus.shape(),
-                tu_nnz,
-                100. * tu_nnz / (tus.ncols() * tus.nrows()) as f64
-            );
-
-            println!("Number of Tu cols:{}", tu.ncols());
-
             CscMatrix::from(
                 &tus.row_iter()
                     .map(|x| x.clone_owned().as_slice().to_vec())
                     .collect::<Vec<Vec<f64>>>(),
             )
         };
-        println!("a_in: {:?}", (a_in.nrows, a_in.ncols));
 
         // QP linear term
         let q: Vec<f64> = vec![0f64; N_MODE];
@@ -189,7 +167,7 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
             .eps_rel(1.0e-6)
             .max_iter(500 * 271)
             .warm_start(true)
-            .verbose(true);
+            .verbose(self.verbose);
 
         // Create an OSQP problem
         let prob = Problem::new(p_utri, &q, a_in, &umin, &umax, &settings)
@@ -197,7 +175,7 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
 
         ActiveOptics {
             prob,
-            u: Vec::with_capacity(84 + 7 * M1_BM),
+            u: vec![0f64; 84 + 7 * M1_BM],
             y_valid: Vec::with_capacity(d_wfs.nrows()),
             d_wfs,
             u_ant: SMatrix::zeros(),
@@ -250,6 +228,13 @@ pub struct ActiveOptics<
     umax: Vec<f64>,
     /// Control balance weighting matrix
     tu: DynMatrix,
+}
+impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE: usize>
+    ActiveOptics<M1_RBM, M2_RBM, M1_BM, N_MODE>
+{
+    pub fn controller_gain(&self) -> f64 {
+        self.k
+    }
 }
 
 impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE: usize> Iterator
@@ -323,7 +308,6 @@ impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE:
             // Solve problem - 2nd iteration
             result = self.prob.solve();
             c = result.x().expect("Failed to solve QP problem!");
-            //            c_vec = SMatrix::<f64, N_MODE, 1>::from_vec(c.to_vec());
             // Control action
             let k = self.k;
             self.u
