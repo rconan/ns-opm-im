@@ -1,3 +1,9 @@
+//! Active Optics Control Algorithm
+//!
+//! Implementation of the GMT Active Optics Control Algorithm
+//! as described in "Natural Seeing Control Algorithms Description
+//! Document" (GMT-DOC-04426)
+
 use dosio::{ios, DOSIOSError, Dos, IOVec, IO};
 use nalgebra as na;
 use nalgebra::{DMatrix, DVector, SMatrix}; //, SVector
@@ -13,20 +19,32 @@ const J1_J3_RATIO: f64 = 10.0;
 // Minimum value assigned to rho3 factor
 const MIN_RHO3: f64 = 1.0e-6;
 
-// AcO data structure
+/// Data structure for the quadratic programming algorithm
 #[derive(Deserialize)]
 struct QPData {
+    /// Controllable mode regularization matrix
     #[serde(rename = "W2")]
     w2: Vec<f64>,
+    /// Control balance weighting matrix
     #[serde(rename = "W3")]
     w3: Vec<f64>,
+    /// Controller gain
     #[serde(rename = "K")]
     k: f64,
+    /// Objective function factor
     rho_3: f64,
 }
+/// Quadratic programming stucture
+///
+/// It requires 4 generic constants:
+///  - `M1_RBM`: the number of controlled M1 segment rigid body motions (at most 41 as S7 Rz is a blind mode)
+///  - `M2_RBM`: the number of controlled M2 segment rigid body motions (at most 41 as S7 Rz is a blind mode)
+///  - `M1_BM` : the number of controlled M1 segment eigen modes
+///  - `N_MODE` = M1_RBM + M2_RBM + 7 * M1_BM
 #[derive(Deserialize)]
 pub struct QP<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE: usize>
 {
+    /// Quadratic programming data
     #[serde(rename = "SHAcO_qp")]
     data: QPData,
     /// calibration matrix (column wise) as (data,n_cols)
@@ -40,11 +58,17 @@ pub struct QP<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, 
 impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE: usize>
     QP<'a, M1_RBM, M2_RBM, M1_BM, N_MODE>
 {
+    /// Creates a new quadratic programming object
     pub fn new(
         qp_filename: &str,
         calib_matrix: (&'a [f64], usize),
         coefs2forces: (&'a [Vec<f64>], Vec<usize>),
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        assert!(
+            M1_RBM + M2_RBM + 7 * M1_BM == N_MODE,
+            "The number of modes {} do not match the expected value {} (M1_RBM + M2_RBM + 7 * M1_BM)x",
+            N_MODE, M1_RBM + M2_RBM + 7 * M1_BM
+        );
         let file = File::open(qp_filename)?;
         let rdr = BufReader::with_capacity(10_000, file);
         let mut this: Self = pickle::from_reader(rdr, Default::default())?;
@@ -52,7 +76,8 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
         this.coefs2forces = coefs2forces;
         Ok(this)
     }
-    fn modal2nodal(&self) -> DynMatrix {
+    /// Computes the control balance weighting matrix
+    fn balance_weighting(&self) -> DynMatrix {
         let (data, n_actuators) = &self.coefs2forces;
         let n_actuators_sum = n_actuators.iter().sum::<usize>();
         let fz = 10e-5;
@@ -86,9 +111,10 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
         }
         tu
     }
-    pub fn build(self) -> ActiveOptics<N_MODE> {
+    /// Builds the quadratic programming problem
+    pub fn build(self) -> ActiveOptics<M1_RBM, M2_RBM, M1_BM, N_MODE> {
         let (dmat, n_mode) = self.dmat;
-        assert!(n_mode == N_MODE);
+        assert!(n_mode == N_MODE,"The number of columns ({}) of the calibration matrix do not match the number of modes ({})",n_mode,N_MODE);
         // W2 and W3
         let w2 = SMatrix::<f64, N_MODE, N_MODE>::from_column_slice(&self.data.w2);
         let w3 = SMatrix::<f64, N_MODE, N_MODE>::from_column_slice(&self.data.w3);
@@ -122,7 +148,7 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
             .into_upper_tri()
         };
 
-        let tu = self.modal2nodal();
+        let tu = self.balance_weighting();
 
         let a_in = {
             //println!("count nonzero: {}", self.data.tu.iter().filter(|&n| *n != 0.0).count());
@@ -187,30 +213,50 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
     }
 }
 
-pub struct ActiveOptics<const N_MODE: usize> {
+pub struct ActiveOptics<
+    const M1_RBM: usize,
+    const M2_RBM: usize,
+    const M1_BM: usize,
+    const N_MODE: usize,
+> {
+    /// Quadratic programming problem
     prob: Problem,
+    /// Calibration matrix
     d_wfs: DynMatrix,
+    /// Previous quadratic programming solution
     u_ant: SMatrix<f64, N_MODE, 1>,
+    /// Current quadratic programming solution
     u: Vec<f64>,
+    /// Wavefront sensor data
     y_valid: Vec<f64>,
+    /// Wavefront error weighting matrix
     d_t_w1_d: na::Matrix<
         f64,
         na::Const<N_MODE>,
         na::Const<N_MODE>,
         na::ArrayStorage<f64, N_MODE, N_MODE>,
     >,
+    /// Controllable mode regularization matrix    
     w2: SMatrix<f64, N_MODE, N_MODE>,
+    /// Control balance weighting matrix
     w3: SMatrix<f64, N_MODE, N_MODE>,
+    /// Objective function factor
     rho_3: f64,
+    /// Controller gain
     k: f64,
+    /// QP solution lower bound
     umin: Vec<f64>,
+    /// QP solution upper bound
     umax: Vec<f64>,
+    /// Control balance weighting matrix
     tu: DynMatrix,
 }
 
-impl<const N_MODE: usize> Iterator for ActiveOptics<N_MODE> {
+impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE: usize> Iterator
+    for ActiveOptics<M1_RBM, M2_RBM, M1_BM, N_MODE>
+{
     type Item = ();
-
+    /// Updates the quadratic programming problem and computes the new solution
     fn next(&mut self) -> Option<Self::Item> {
         let y_vec = DVector::from_column_slice(&self.y_valid); //VectorNs::from_vec(y_valid);
                                                                // QP linear term                                                               // QP linear term
@@ -278,40 +324,43 @@ impl<const N_MODE: usize> Iterator for ActiveOptics<N_MODE> {
             result = self.prob.solve();
             c = result.x().expect("Failed to solve QP problem!");
             //            c_vec = SMatrix::<f64, N_MODE, 1>::from_vec(c.to_vec());
+            // Control action
             let k = self.k;
-            self.u[..41]
+            self.u
                 .iter_mut()
-                .zip(&c[..41])
+                .zip(&c[..M1_RBM])
                 .for_each(|(u, c)| *u -= k * c);
-            self.u[42..83]
+            self.u[42..]
                 .iter_mut()
-                .zip(&c[41..82])
+                .zip(&c[M1_RBM..M1_RBM + M2_RBM])
                 .for_each(|(u, c)| *u -= k * c);
             self.u[84..]
                 .iter_mut()
-                .zip(&c[82..])
+                .zip(&c[M1_RBM + M2_RBM..])
                 .for_each(|(u, c)| *u -= k * c);
         }
         Some(())
     }
 }
 
-impl<const N_MODE: usize> Dos for ActiveOptics<N_MODE> {
+impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE: usize> Dos
+    for ActiveOptics<M1_RBM, M2_RBM, M1_BM, N_MODE>
+{
     type Input = Vec<f64>;
     type Output = Vec<f64>;
 
     fn outputs(&mut self) -> Option<Vec<IO<Self::Output>>> {
-        let segment_bm: Vec<_> = self.u[84..].chunks(27).collect();
+        let mut segment_bm = self.u[84..].chunks(M1_BM);
         Some(ios!(
             M1RBMcmd(self.u[..42].to_vec()),
             M2poscmd(self.u[42..84].to_vec()),
-            M1S1BMcmd(segment_bm[0].to_vec()),
-            M1S2BMcmd(segment_bm[1].to_vec()),
-            M1S3BMcmd(segment_bm[2].to_vec()),
-            M1S4BMcmd(segment_bm[3].to_vec()),
-            M1S5BMcmd(segment_bm[4].to_vec()),
-            M1S6BMcmd(segment_bm[5].to_vec()),
-            M1S7BMcmd(segment_bm[6].to_vec())
+            M1S1BMcmd(segment_bm.next().unwrap().to_vec()),
+            M1S2BMcmd(segment_bm.next().unwrap().to_vec()),
+            M1S3BMcmd(segment_bm.next().unwrap().to_vec()),
+            M1S4BMcmd(segment_bm.next().unwrap().to_vec()),
+            M1S5BMcmd(segment_bm.next().unwrap().to_vec()),
+            M1S6BMcmd(segment_bm.next().unwrap().to_vec()),
+            M1S7BMcmd(segment_bm.next().unwrap().to_vec())
         ))
     }
 
@@ -320,17 +369,15 @@ impl<const N_MODE: usize> Dos for ActiveOptics<N_MODE> {
         data: Option<Vec<IO<Self::Input>>>,
     ) -> Result<&mut Self, dosio::DOSIOSError> {
         match data {
-            Some(mut data) => {
-                if let Some(IO::SensorData { data: Some(value) }) = data.pop_this(ios!(SensorData))
-                {
+            Some(mut data) => match data.pop_this(ios!(SensorData)) {
+                Some(IO::SensorData { data: Some(value) }) if value.len() == self.d_wfs.nrows() => {
                     self.y_valid = value;
                     Ok(self)
-                } else {
-                    Err(DOSIOSError::Inputs(
-                        "ActiveOptics SensorData not found".into(),
-                    ))
                 }
-            }
+                _ => Err(DOSIOSError::Inputs(
+                    "No suitable ActiveOptics SensorData found, either the data is None or its size do not match the calibration matrix rows".into(),
+                )),
+            },
             None => Err(DOSIOSError::Inputs(
                 "None data passed to Active Optics".into(),
             )),
