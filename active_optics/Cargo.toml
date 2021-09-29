@@ -1,0 +1,16 @@
+[package]
+name = "active_optics"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bincode = "1.3.3"
+crseo = { path = "../../crseo", features = ["dos"] }
+dosio = { git = "https://github.com/rconan/dosio.git", branch = "ns-opm-im" }
+nalgebra = "0.29.0"
+osqp = "0.6.2"
+serde = { version = "1.0.130", features = ["derive"] }
+serde-pickle = "1.1.0"
+skyangle = { git = "https://github.com/rconan/skyangle.git", branch = "main" }
