@@ -246,8 +246,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Eigen modes and eigen coefs to forces matrix
     let file = File::open("m1_eigen_modes.bin").unwrap();
-    let data: Vec<(Vec<f64>, Vec<f64>)> = bincode::deserialize_from(file).unwrap();
-    let (eigens, coefs2forces) = &data[sid - 1];
+    let eigens_data: Vec<(Vec<f64>, Vec<f64>)> = bincode::deserialize_from(file).unwrap();
+    let (eigens, coefs2forces) = &eigens_data[sid - 1];
     let nodes = &m1_segments_surface_nodes[0];
     let n_node = nodes.len() / 3;
     let n_eigen_mode = eigens.len() / n_node;
