@@ -4,7 +4,7 @@ use crseo::{
     dos::GmtOpticalSensorModel,
     from_opticals,
     shackhartmann::{Diffractive, Geometric},
-    Builder, Calibration, OpticalSensitivities, ShackHartmann, SH48,
+    Builder, Calibration, OpticalSensitivities, ShackHartmann, SH48, SOURCE,
 };
 use dosio::{ios, Dos, IOVec};
 use fem::{dos::DiscreteStateSpace, FEM};
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut wind_loading = WindLoads::from_pickle(
         Path::new("data").join("b2019_0z_30az_os_7ms.wind_loads_1kHz_100-400s.pkl"),
     )?
-    .range(0.0, 30.0)
+    .range(0.0, 15.0)
     .truss()?
     .build()?;
 
@@ -51,9 +51,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     .sampling(sampling_rate)
     .proportional_damping(2. / 100.)
-    .inputs_from(&wind_loading)
-    .inputs_from(&mnt_drives)
-    .inputs_from(&m1_hardpoints)
+    .inputs_from(&[
+        &wind_loading,
+        &mnt_drives,
+        &m1_hardpoints,
+        &fsm_positionner,
+        &fsm_piezostack,
+    ])
     .inputs(ios!(
         M1ActuatorsSegment1,
         M1ActuatorsSegment2,
@@ -63,8 +67,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         M1ActuatorsSegment6,
         M1ActuatorsSegment7
     ))
-    .inputs_from(&fsm_positionner)
-    .inputs_from(&fsm_piezostack)
     .outputs(ios!(OSSM1Lcl, MCM2Lcl6D))
     .outputs(ios!(
         OSSAzEncoderAngle,
@@ -81,18 +83,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wfs_sample_rate = (exposure_time * sampling_rate) as usize;
     let wfs_delay = sampling_rate as usize * 10;
     type WfsType = Diffractive;
-    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH48<WfsType>>::new()
-        .sensor(SH48::<WfsType>::new().n_sensor(n_sensor))
-        /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
-            26.,
-            520,
-            0.,
-            25.,
-            Some("ns-opm-im_atm.bin".to_string()),
-            Some(8),
-        ))*/
-        .build()?;
-    gosm.src.fwhm(6f64);
+    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH48<WfsType>>::new(Some(
+        SOURCE::new().size(n_sensor).fwhm(6f64),
+    ))
+    .sensor(SH48::<WfsType>::new().n_sensor(n_sensor))
+    /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
+        26.,
+        520,
+        0.,
+        25.,
+        Some("ns-opm-im_atm.bin".to_string()),
+        Some(8),
+    ))*/
+    .build()?;
+
     println!("M1 mode: {}", gosm.gmt.get_m1_mode_type());
     println!("M2 mode: {}", gosm.gmt.get_m2_mode_type());
     println!("GS band: {}", gosm.src.get_photometric_band());

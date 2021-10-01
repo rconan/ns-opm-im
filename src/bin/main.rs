@@ -1,40 +1,77 @@
+use active_optics::QP;
 use complot::{Axis, Config, Plot};
 use crseo::{
-    calibrations, ceo,
+    calibrations,
     dos::GmtOpticalSensorModel,
     from_opticals,
     shackhartmann::{Diffractive, Geometric, WavefrontSensorBuilder},
-    Builder, Calibration, OpticalSensitivities, ShackHartmann, GMT, SH48,
+    Builder, Calibration, OpticalSensitivities, ShackHartmann, GMT, SH48, SOURCE,
 };
 use dosio::{ios, Dos, IOVec};
 use fem::{
     dos::{DiscreteModalSolver, DiscreteStateSpace, Exponential},
     FEM,
 };
-use geotrans::{Quaternion, Vector};
 use indicatif::{ProgressBar, ProgressStyle};
 use m1_ctrl as m1;
 use mount_ctrl as mount;
 use nalgebra as na;
-use serde_pickle as pkl;
-use simple_logger::SimpleLogger;
 use skyangle::Conversion;
 use std::{fs::File, path::Path, time::Instant};
 use windloading::WindLoads;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    SimpleLogger::new().env().init()?;
-
+    let sim_duration = 15f64;
     let sampling_rate = 1e3;
+    let wfs_delay = 10f64;
+    let wfs_sample_delay = (sampling_rate * wfs_delay) as usize;
+    let aco_delay = 1f64;
+    let aco_sample_delay = (sampling_rate * aco_delay) as usize;
+    let tiptilt_exposure_time = 5e-3;
+    let tiptilt_sample_rate = (tiptilt_exposure_time * sampling_rate) as usize;
+    let aco_exposure_time = 1f64;
+    let aco_sample_rate = (aco_exposure_time * sampling_rate) as usize;
+    let m1_sampling_rate = 100f64;
+    let m1_sample_rate = (sampling_rate / m1_sampling_rate) as usize;
+    println!(
+        r##"
+NS OPM IM Timing:
+ - duration                        : {:}s,
+ - sampling rate                   : {:}Hz,
+ - Tip-tilt loop delay             : {:}s ({:} sample),
+ - Tip-tilt loop sampling rate     : {:}Hz ({:} sample),
+ - Active Optics loop delay        : {:}s ({:} sample),
+ - Active Optics loop sampling rate: {:}Hz ({:} sample),
+ - M1 force loop sampling rate     : {:}Hz ({:} sample),
+"##,
+        sim_duration,
+        sampling_rate,
+        wfs_delay,
+        wfs_sample_delay,
+        tiptilt_exposure_time.recip(),
+        tiptilt_sample_rate,
+        aco_delay + wfs_delay,
+        aco_sample_delay + wfs_sample_delay,
+        aco_exposure_time.recip(),
+        aco_sample_rate,
+        m1_sampling_rate,
+        m1_sample_rate
+    );
 
     // WIND LOADS
     println!("Loading wind loads ...");
+    let now = Instant::now();
     let mut wind_loading = WindLoads::from_pickle(
         Path::new("data").join("b2019_0z_30az_os_7ms.wind_loads_1kHz_100-400s.pkl"),
     )?
-    .range(0.0, 3.)
+    .range(0.0, sim_duration)
     .truss()?
+    //.m2_asm_topend()?
+    .m1_segments()?
+    .m1_cell()?
+    //    .m2_segments()?
     .build()?;
+    println!("... in {}ms", now.elapsed().as_millis());
 
     // MOUNT
     let mut mnt_drives = mount::drives::Controller::new();
@@ -42,8 +79,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // M1
     let mut m1_hardpoints = m1::hp_dynamics::Controller::new();
     let mut m1_load_cells = m1::hp_load_cells::Controller::new();
-    let m1_actuator_sampling_rate = 100f64;
-    let m1_actuators_update_rate = (sampling_rate / m1_actuator_sampling_rate) as usize;
     let mut m1_actuators = m1::actuators::M1ForceLoops::new();
     // M2
     let mut fsm_positionner = fsm::positionner::Controller::new();
@@ -52,10 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // - tipt-tilt
     let mut os_tiptilt = fsm::tiptilt::Controller::new();
     //FEM
-    let sid = 1;
-    let (m1_segments_surface_nodes, mut fem): (Vec<Vec<f64>>, DiscreteModalSolver<Exponential>) = {
+    let now = Instant::now();
+    let (_m1_segments_surface_nodes, mut fem): (Vec<Vec<f64>>, DiscreteModalSolver<Exponential>) = {
         let fem = FEM::from_env()?;
-        println!("FEM:\n{}", fem);
+        //println!("FEM:\n{}", fem);
         (
             fem.outputs
                 .iter()
@@ -73,28 +108,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             DiscreteStateSpace::from(fem)
                 .sampling(sampling_rate)
                 .proportional_damping(2. / 100.)
-                .inputs_from(&wind_loading)
-                .inputs_from(&mnt_drives)
-                .inputs_from(&m1_hardpoints)
-                .inputs(ios!(
-                    M1ActuatorsSegment1,
-                    M1ActuatorsSegment2,
-                    M1ActuatorsSegment3,
-                    M1ActuatorsSegment4,
-                    M1ActuatorsSegment5,
-                    M1ActuatorsSegment6,
-                    M1ActuatorsSegment7
-                ))
-                .inputs_from(&fsm_positionner)
-                .inputs_from(&fsm_piezostack)
-                .outputs(ios!(OSSM1Lcl, MCM2Lcl6D))
-                .outputs(ios!(
-                    OSSAzEncoderAngle,
-                    OSSElEncoderAngle,
-                    OSSRotEncoderAngle
-                ))
+                .truncate_hankel_singular_values(1e-5)
+                .inputs_from(&[
+                    &wind_loading,
+                    &mnt_drives,
+                    &m1_hardpoints,
+                    &m1_actuators,
+                    &fsm_positionner,
+                    &fsm_piezostack,
+                ])
+                .outputs_to(&[&mnt_ctrl])
                 .outputs(vec![ios!(OSSHardpointD)])
                 .outputs(ios!(MCM2SmHexD, MCM2PZTD))
+                .outputs(ios!(OSSM1Lcl, MCM2Lcl6D))
                 .outputs(ios!(
                     M1Segment1AxialD,
                     M1Segment2AxialD,
@@ -107,30 +133,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build()?,
         )
     };
+    println!("... in {}ms", now.elapsed().as_millis());
+    println!("{}", fem);
 
     // CEO WFSS
-    let exposure_time = 5e-3;
     let n_sensor = 1;
-    let wfs_sample_rate = (exposure_time * sampling_rate) as usize;
-    let wfs_delay = sampling_rate as usize * 1;
     type WfsType = Diffractive;
-    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH48<WfsType>>::new()
-        .gmt(GMT::new().m1("m1_eigen_modes", 329))
-        .sensor(SH48::<WfsType>::new().n_sensor(n_sensor))
-        /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
-            26.,
-            520,
-            0.,
-            25.,
-            Some("ns-opm-im_atm.bin".to_string()),
-            Some(8),
-        ))*/
-        .build()?;
-    gosm.src.fwhm(6f64);
+    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH48<WfsType>>::new(Some(
+        SOURCE::new().size(n_sensor).fwhm(6f64),
+    ))
+    .sensor(SH48::<WfsType>::new().n_sensor(n_sensor))
+    /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
+        26.,
+        520,
+        0.,
+        25.,
+        Some("ns-opm-im_atm.bin".to_string()),
+        Some(8),
+    ))*/
+    .build()?;
+
     println!("M1 mode: {}", gosm.gmt.get_m1_mode_type());
     println!("M2 mode: {}", gosm.gmt.get_m2_mode_type());
     println!("GS band: {}", gosm.src.get_photometric_band());
-    // - M2 Rxy calibration matrix
+
     let mut gmt2wfs = Calibration::new(
         &gosm.gmt,
         &gosm.src,
@@ -150,7 +176,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         gmt2wfs.n_mode,
         now.elapsed().as_secs()
     );
-    // - poke matrix check
     let poke_sum = gmt2wfs.poke.from_dev().iter().sum::<f32>();
     println!("Poke sum: {}", poke_sum);
     let wfs_2_m2rxy = gmt2wfs.qr();
@@ -167,6 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|x| Into::<Option<Vec<f64>>>::into(x[0].clone()))
         .map(|x| x.into_iter().map(|x| x as f32).collect::<Vec<f32>>())
         .unwrap();
+
     let a = wfs_2_m2rxy.solve(&mut y.into());
     Vec::<f32>::from(a)
         .into_iter()
@@ -175,73 +201,89 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .chunks(2)
         .enumerate()
         .for_each(|x| println!("#{}: [{:+0.1},{:+0.1}]", 1 + x.0, x.1[0], x.1[1]));
-    // - M1 27 eigen modes calibration matrix
-    let mut gosm_aco = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH48<WfsType>>::new()
-        .gmt(GMT::new().m1("m1_eigen_modes", 329))
-        .sensor(SH48::<WfsType>::new().n_sensor(n_sensor))
-        /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
-            26.,
-            520,
-            0.,
-            25.,
-            Some("ns-opm-im_atm.bin".to_string()),
-            Some(8),
-        ))*/
-        .build()?;
-    gosm_aco.src.fwhm(6f64);
 
-    let gmt_calib = ceo!(GMT, m1 = ["m1_eigen_modes", 27]); //GMT::new().m1("m1_eigen_modes", 27).build()?;
-    let wfs_calib = SH48::<Geometric>::new().n_sensor(n_sensor);
-    let src_calib = wfs_calib.guide_stars(None).build()?;
-    let mut m1_eigs_wfs = Calibration::new(&gmt_calib, &src_calib, wfs_calib);
-    let mirror = vec![calibrations::Mirror::M1MODES];
-    let segments = vec![vec![calibrations::Segment::Modes(1e-6, 0..27)]; 7];
-    let now = Instant::now();
-    m1_eigs_wfs.calibrate(
-        mirror,
-        segments,
-        calibrations::ValidLensletCriteria::OtherSensor(&mut gosm_aco.sensor),
-    );
-    println!(
-        "GTM 2 WFS calibration [{}x{}] in {}s",
-        m1_eigs_wfs.n_data,
-        m1_eigs_wfs.n_mode,
-        now.elapsed().as_secs()
-    );
-    // - poke matrix check
-    //    let poke_sum = gmt2wfs.poke.from_dev().iter().sum::<f32>();
-    println!("Poke sum: {}", poke_sum);
-    m1_eigs_wfs.qr();
-    let mut m1_modes_buf = vec![vec![0f64; 329]; 7];
-    m1_modes_buf[0][0] = 1e-6;
-    m1_modes_buf[3][5] = 1e-6;
-    m1_modes_buf[6][3] = -1e-6;
-    let m1_modes = ios!(M1modes(
-        m1_modes_buf.into_iter().flatten().collect::<Vec<f64>>()
-    ));
-    //    gosm.inputs(vec![m2_rbm.clone()]).unwrap().step();
-    let y = gosm_aco
-        .in_step_out(Some(vec![m1_modes]))?
-        .and_then(|x| Into::<Option<Vec<f64>>>::into(x[0].clone()))
-        .map(|x| x.into_iter().map(|x| x as f32).collect::<Vec<f32>>())
-        .unwrap();
-    let a = m1_eigs_wfs.solve(&mut y.into());
-    Vec::<f32>::from(a)
-        .into_iter()
-        .map(|x| x * 1e6)
-        .collect::<Vec<f32>>()
-        .chunks(27)
-        .enumerate()
-        .for_each(|(k, x)| println!("#{}: [{:+.2?}]", 1 + k, &x[..6]));
+    // - M1 27 eigen modes calibration matrix
+    let n_aco_sensor = 3;
+    let mut gosm_aco = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH48<WfsType>>::new(Some(
+        SOURCE::new()
+            .size(n_aco_sensor)
+            .on_ring(6f32.from_arcmin())
+            .fwhm(6f64),
+    ))
+    .gmt(GMT::new().m1("m1_eigen_modes", 329))
+    .sensor(SH48::<WfsType>::new().n_sensor(n_aco_sensor))
+    /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
+        26.,
+        520,
+        0.,
+        25.,
+        Some("ns-opm-im_atm.bin".to_string()),
+        Some(8),
+    ))*/
+    .build()?;
+
+    // WFS Calibration
+    use calibrations::Mirror::*;
+    use calibrations::Segment::*;
+    let mut segments = vec![vec![Txyz(1e-6, None), Rxyz(1e-6, None)]; 6];
+    segments.append(&mut vec![vec![Txyz(1e-6, None), Rxyz(1e-6, Some(0..2))]]);
+    let dmat: Vec<_> = vec![
+        (vec![M1], segments.clone()),
+        (vec![M2], segments),
+        (vec![M1MODES], vec![vec![Modes(1e-6, 0..27)]; 7]),
+    ]
+    .into_iter()
+    .map(|(mirror, segments)| -> Vec<f32> {
+        let gmt_calib = GMT::new().m1("m1_eigen_modes", 27).build().unwrap();
+        let wfs_calib = SH48::<Geometric>::new().n_sensor(n_aco_sensor);
+        let src_calib = wfs_calib
+            .guide_stars(Some(
+                SOURCE::new().size(n_aco_sensor).on_ring(6f32.from_arcmin()),
+            ))
+            .build()
+            .unwrap();
+        // WFS Calibration
+        println!("M1 RBM calibration");
+        let mut calib = Calibration::new(&gmt_calib, &src_calib, wfs_calib.clone());
+        let now = Instant::now();
+        calib.calibrate(
+            mirror,
+            segments,
+            calibrations::ValidLensletCriteria::OtherSensor(&mut gosm_aco.sensor),
+        );
+        println!(
+            "GMT WFS calibration [{}x{}] in {}s",
+            &calib.n_data,
+            &calib.n_mode,
+            now.elapsed().as_secs()
+        );
+        calib.poke.into()
+    })
+    .flatten()
+    .map(|x| x as f64)
+    .collect();
 
     // Eigen modes and eigen coefs to forces matrix
     let file = File::open("m1_eigen_modes.bin").unwrap();
-    let data: Vec<(Vec<f64>, Vec<f64>)> = bincode::deserialize_from(file).unwrap();
-    let (eigens, coefs2forces) = &data[sid - 1];
-    let nodes = &m1_segments_surface_nodes[0];
-    let n_node = nodes.len() / 3;
-    let n_eigen_mode = eigens.len() / n_node;
-    let m1_s1_eigens = na::DMatrix::from_column_slice(n_node, n_eigen_mode, eigens);
+    let eigens_data: Vec<(Vec<f64>, Vec<f64>)> = bincode::deserialize_from(file).unwrap();
+    let (eigens, coefs2forces): (Vec<_>, Vec<_>) = eigens_data.into_iter().unzip();
+    let n_actuators = vec![335, 335, 335, 335, 335, 335, 306];
+    let modes_t: Vec<_> = eigens
+        .iter()
+        .zip(n_actuators.iter().map(|&n| n - 6))
+        .map(|(x, n)| na::DMatrix::from_column_slice(x.len() / n, n, x).transpose())
+        .collect();
+
+    // Active optics control algorithm
+    let mut aco = QP::<41, 41, 27, 271>::new(
+        "active_optics/SHAcO_qp_rhoP1e-3_kIp5.rs.pkl",
+        (&dmat, 271),
+        (&coefs2forces, n_actuators),
+    )?
+    //    .convergence_tolerances((1e-6, 1e-4))
+    //    .verbose()
+    .as_m1_actuator_forces()
+    .build();
 
     // I/O initialization
     let mut mount_drives_forces = Some(ios!(
@@ -249,20 +291,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         OSSElDriveTorque(vec![0f64; 4]),
         OSSRotDriveTorque(vec![0f64; 4])
     ));
-    let m1_s1_coefs = na::DVector::from_column_slice(&[1e-6, 0., 0.]);
-    let m1_s1_forces = na::DMatrix::from_column_slice(
-        coefs2forces.len() / n_eigen_mode,
-        n_eigen_mode,
-        &coefs2forces,
-    )
-    .columns(0, m1_s1_coefs.nrows())
-        * &m1_s1_coefs;
-    dbg!(m1_s1_forces.shape());
-    pkl::to_writer(
-        &mut File::create("M1_S1_Forces.pkl")?,
-        &m1_s1_forces.as_slice().to_vec(),
-        true,
-    )?;
     let mut m1_actuators_forces = Some(ios!(
         M1ActuatorsSegment1(vec![0f64; 335]),
         M1ActuatorsSegment2(vec![0f64; 335]),
@@ -272,9 +300,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         M1ActuatorsSegment6(vec![0f64; 335]),
         M1ActuatorsSegment7(vec![0f64; 306])
     ));
-    let m1_bending_modes = ios!(
-        //        M1S1BMcmd(vec![0f64; 335]),
-        M1S1BMcmd(m1_s1_forces.as_slice().to_vec()),
+    let mut m1_bending_modes = ios!(
+        M1S1BMcmd(vec![0f64; 335]),
         M1S2BMcmd(vec![0f64; 335]),
         M1S3BMcmd(vec![0f64; 335]),
         M1S4BMcmd(vec![0f64; 335]),
@@ -299,9 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fsm_positionner_forces.as_mut().map(|x| {
         fem_forces.append(x);
     });
-    fsm_piezostack_forces.as_mut().map(|x| {
-        fem_forces.append(x);
-    });
+    fsm_piezostack_forces.as_mut().map(|x| fem_forces.append(x));
 
     let optical_sensitivities = OpticalSensitivities::load()?;
     let rxy_2_stt = &optical_sensitivities[3].m2_rxy()?;
@@ -319,15 +344,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pb = ProgressBar::new(n_step as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("[{duration_precise}] {bar:60.cyan/blue} {pos:>7}/{len:7}")
+            .template("[{duration_precise}] {bar:60.cyan/blue} [{eta_precise}]")
             .progress_chars("=|-"),
     );
     let mut k = 0;
     let now = Instant::now();
-    while let Some(mut _fem_forces) = wind_loading.outputs() {
+    while let Some(mut fem_forces) = wind_loading.outputs() {
         //for k in 0..n_step {
         pb.inc(1);
-        let mut fem_forces = vec![ios!(OSSTruss6F(vec![0f64; 36]))];
         //    let mut fem_forces = Vec::<IO<Vec<f64>>>::with_capacity(n_fem_forces);
         // MOUNT
         fem_outputs
@@ -349,7 +373,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fem_forces.append(&mut mount_drives_forces);
             });
         // M1
-        if k % 10 == 0 {
+        if k % m1_sample_rate == 0 {
             m1_actuators_forces = fem_outputs
                 .pop_these(vec![ios!(OSSHardpointD)])
                 .and_then(|mut hp_d| {
@@ -359,7 +383,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                 })
                 .and_then(|mut hp_lc| {
-                    hp_lc.append(&mut m1_bending_modes.clone());
+                    hp_lc.extend_from_slice(&m1_bending_modes);
                     m1_actuators.in_step_out(Some(hp_lc)).unwrap()
                 })
         };
@@ -398,90 +422,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // FEM
         fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
         // WFSing
-        if k >= wfs_delay {
-            /*
-                        if let Some(ref mut atm) = gosm.atm {
-                            atm.secs = k as f64 / sampling_rate;
-                        }
-                        gosm.inputs(Some(vec![
-                            fem_outputs[ios!(OSSM1Lcl)].clone(),
-                            fem_outputs[ios!(MCM2Lcl6D)].clone(),
-                        ]))
-                        .unwrap()
-                        //gosm.inputs(fem_outputs.pop_these(ios!(OSSM1Lcl, MCM2Lcl6D))).unwrap()
-                        .step()
-                        .unwrap();
-                        if k % wfs_sample_rate == 0 {
-                            // Optical System
-                            //  - tip-tilt
-                            pzt_cmd = gosm
-                                .outputs()
-                                .and_then(|x| Into::<Option<Vec<f64>>>::into(x[0].clone()))
-                                .map(|x| x.into_iter().map(|x| x as f32).collect::<Vec<f32>>())
-                                .map(|y| wfs_2_m2rxy.solve(&mut y.into()).into())
-                                .map(|m2_rxy: Vec<f32>| {
-                                    (rxy_2_stt
-                                        * na::DVector::from_iterator(14, m2_rxy.iter().map(|&x| x as f64)))
-                                    .as_slice()
-                                    .to_vec()
-                                })
-                                .map(|stt| os_tiptilt.in_step_out(Some(ios!(TTSP(vec![0f64]), TTFB(stt)))))
-                                .unwrap()?;
-                        }
-            */
-            if k % m1_actuators_update_rate == 0 {
-                let rbms = Option::<Vec<f64>>::from(&fem_outputs[ios!(OSSM1Lcl)]).unwrap();
-                let m1_segment_figures: Vec<Vec<f64>> = ios!(
-                    M1Segment1AxialD,
-                    M1Segment2AxialD,
-                    M1Segment3AxialD,
-                    M1Segment4AxialD,
-                    M1Segment5AxialD,
-                    M1Segment6AxialD,
-                    M1Segment7AxialD
-                )
-                .into_iter()
-                .filter_map(|io| Option::<Vec<f64>>::from(&fem_outputs[io]))
-                .zip(m1_segments_surface_nodes.iter())
-                .zip(rbms.chunks(6))
-                .map(|((surface, nodes), rbm)| {
-                    let (t_xyz, r_xyz) = rbm.split_at(3);
-                    let rxyz_surface = {
-                        // 3D rotation of mirror surface nodes
-                        let q = Quaternion::unit(r_xyz[2], Vector::k())
-                            * Quaternion::unit(r_xyz[1], Vector::j())
-                            * Quaternion::unit(r_xyz[0], Vector::i());
-                        let trans_nodes: Vec<f64> = nodes
-                            .chunks(3)
-                            .flat_map(|x| {
-                                let p: Quaternion = Vector::from(x).into();
-                                let w: Quaternion = &q * p * &q.complex_conjugate();
-                                let vv: Vec<f64> = (*Vector::from(w.vector_as_slice())).into();
-                                vv
-                            })
-                            .collect();
-                        trans_nodes
-                            .chunks(3)
-                            .map(|x| x[2])
-                            .zip(nodes.chunks(3).map(|x| x[2]))
-                            .map(|(z_rbm, z)| z_rbm - z)
-                            .collect::<Vec<f64>>()
-                    };
-                    // Removing Rx, Ry, Rz and Tz
-                    surface
-                        .iter()
-                        .zip(rxyz_surface.iter())
-                        .map(|(&a, r)| a - r - t_xyz[2])
-                        .collect::<Vec<f64>>()
-                })
-                .collect();
-                let m1_s1_coefs_from_figure = m1_s1_eigens.columns(0, 3).transpose()
-                    * na::DVector::from_column_slice(&m1_segment_figures[0]);
-                dbg!(m1_s1_coefs_from_figure
+        if k >= wfs_sample_delay {
+            let bm_coefs: Vec<f64> = ios!(
+                M1Segment1AxialD,
+                M1Segment2AxialD,
+                M1Segment3AxialD,
+                M1Segment4AxialD,
+                M1Segment5AxialD,
+                M1Segment6AxialD,
+                M1Segment7AxialD
+            )
+            .into_iter()
+            .filter_map(|io| Option::<Vec<f64>>::from(&fem_outputs[io]))
+            .zip(&modes_t)
+            .map(|(m1_segment_figure, eigens)| {
+                { eigens * na::DVector::from_column_slice(&m1_segment_figure) }
                     .as_slice()
-                    .iter()
-                    .map(|x| x * 1e6)
-                    .collect::<Vec<f64>>());
+                    .to_vec()
+            })
+            .flat_map(|mut x| {
+                if x.len() < 329 {
+                    x.append(&mut vec![0f64; 329 - x.len()])
+                }
+                x
+            })
+            .collect();
+            if let Some(ref mut atm) = gosm.atm {
+                atm.secs = k as f64 / sampling_rate;
+            }
+            let os_gmt_state = Some(vec![
+                fem_outputs[ios!(OSSM1Lcl)].clone(),
+                fem_outputs[ios!(MCM2Lcl6D)].clone(),
+                ios!(M1modes(bm_coefs.clone())),
+            ]);
+            gosm.inputs(os_gmt_state.clone())
+                .unwrap()
+                //gosm.inputs(fem_outputs.pop_these(ios!(OSSM1Lcl, MCM2Lcl6D))).unwrap()
+                .step()
+                .unwrap();
+            if k % tiptilt_sample_rate == 0 {
+                // Optical System
+                //  - tip-tilt
+                pzt_cmd = gosm
+                    .outputs()
+                    .and_then(|x| Into::<Option<Vec<f64>>>::into(x[0].clone()))
+                    .map(|x| x.into_iter().map(|x| x as f32).collect::<Vec<f32>>())
+                    .map(|y| wfs_2_m2rxy.solve(&mut y.into()).into())
+                    .map(|m2_rxy: Vec<f32>| {
+                        (rxy_2_stt
+                            * na::DVector::from_iterator(14, m2_rxy.iter().map(|&x| x as f64)))
+                        .as_slice()
+                        .to_vec()
+                    })
+                    .map(|stt| os_tiptilt.in_step_out(Some(ios!(TTSP(vec![0f64]), TTFB(stt)))))
+                    .unwrap()?;
+            }
+            let l = k - wfs_sample_delay;
+            if l >= aco_sample_delay {
+                gosm_aco.inputs(os_gmt_state).unwrap().step().unwrap();
+                if l % aco_sample_rate == 0 {
+                    m1_bending_modes = aco.in_step_out(gosm_aco.outputs()).unwrap().unwrap();
+                }
             }
         }
         k += 1;
@@ -503,7 +504,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pb.finish();
     let eta = now.elapsed();
     println!(
-        "{} sample wind loads played in [{}] ({}ms/step)",
+        "{} sample wind loads played in [{}] ({:.3}ms/step)",
         n_step,
         humantime::format_duration(eta),
         eta.as_millis() as f64 / n_step as f64
