@@ -53,8 +53,15 @@ pub struct QP<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, 
     /// segment bending modes coefficients to segment actuators forces  (column wise) as ([data],[n_rows])
     #[serde(skip)]
     coefs2forces: (&'a [Vec<f64>], Vec<usize>),
+    /// OSQP verbosity
     #[serde(skip)]
     verbose: bool,
+    #[serde(skip)]
+    /// convert bending modes coefficients to forces if true
+    m1_actuator_forces_outputs: bool,
+    /// OSQP convergence tolerances (absolute=1e-8,relative=1e-6)
+    #[serde(skip)]
+    convergence_tolerances: (f64, f64),
 }
 
 impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE: usize>
@@ -78,8 +85,24 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
             dmat: calib_matrix,
             coefs2forces,
             verbose: false,
+            m1_actuator_forces_outputs: false,
+            convergence_tolerances: (1.0e-8, 1.0e-6),
             ..this
         })
+    }
+    /// Sets OSQP verbosity
+    pub fn verbose(self) -> Self {
+        Self {
+            verbose: true,
+            ..self
+        }
+    }
+    /// Outputs the forces of M1 actuators instead of M1 bending modes coefficients
+    pub fn as_m1_actuator_forces(self) -> Self {
+        Self {
+            m1_actuator_forces_outputs: true,
+            ..self
+        }
     }
     /// Computes the control balance weighting matrix
     fn balance_weighting(&self) -> DynMatrix {
@@ -115,9 +138,12 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
         }
         tu
     }
-    /// Sets OSQP verbosity
-    pub fn verbose(self, verbose: bool) -> Self {
-        Self { verbose, ..self }
+    /// Sets OSQP convergence tolerances: (absolute,relative)
+    pub fn convergence_tolerances(self, convergence_tolerances: (f64, f64)) -> Self {
+        Self {
+            convergence_tolerances,
+            ..self
+        }
     }
     /// Builds the quadratic programming problem
     pub fn build(self) -> ActiveOptics<M1_RBM, M2_RBM, M1_BM, N_MODE> {
@@ -163,8 +189,8 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
 
         // QP settings
         let settings = Settings::default()
-            .eps_abs(1.0e-8)
-            .eps_rel(1.0e-6)
+            .eps_abs(self.convergence_tolerances.0)
+            .eps_rel(self.convergence_tolerances.1)
             .max_iter(500 * 271)
             .warm_start(true)
             .verbose(self.verbose);
@@ -187,6 +213,17 @@ impl<'a, const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_M
             umin: vec![f64::NEG_INFINITY; tu.nrows()],
             umax: vec![f64::INFINITY; tu.nrows()],
             tu,
+            coefs2forces: self.m1_actuator_forces_outputs.then(|| {
+                let (data, n_actuators) = &self.coefs2forces;
+                data.iter()
+                    .zip(n_actuators)
+                    .map(|(c2f, &n)| {
+                        DMatrix::from_column_slice(n, c2f.len() / n, c2f)
+                            .columns(0, M1_BM)
+                            .into_owned()
+                    })
+                    .collect()
+            }),
         }
     }
 }
@@ -228,6 +265,8 @@ pub struct ActiveOptics<
     umax: Vec<f64>,
     /// Control balance weighting matrix
     tu: DynMatrix,
+    /// segment bending modes coefficients to segment actuators forces  (column wise) as ([data],[n_rows])
+    coefs2forces: Option<Vec<DynMatrix>>,
 }
 impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE: usize>
     ActiveOptics<M1_RBM, M2_RBM, M1_BM, N_MODE>
@@ -244,7 +283,25 @@ impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE:
     /// Updates the quadratic programming problem and computes the new solution
     fn next(&mut self) -> Option<Self::Item> {
         let y_vec = DVector::from_column_slice(&self.y_valid); //VectorNs::from_vec(y_valid);
-                                                               // QP linear term                                                               // QP linear term
+
+        self.u_ant
+            .iter_mut()
+            .zip(&self.u)
+            .take(M1_RBM)
+            .for_each(|(u, &v)| *u = v);
+        self.u_ant
+            .iter_mut()
+            .skip(M1_RBM)
+            .zip(&self.u[42..])
+            .take(M2_RBM)
+            .for_each(|(u, &v)| *u = v);
+        self.u_ant
+            .iter_mut()
+            .skip(M1_RBM + M2_RBM)
+            .zip(&self.u[84..])
+            .for_each(|(u, &v)| *u = v);
+
+        // QP linear term                                                               // QP linear term
         let mut q: Vec<f64> = (-y_vec.clone_owned().tr_mul(&self.d_wfs)
             - self.u_ant.tr_mul(&self.w3).scale(self.rho_3 * self.k))
         .as_slice()
@@ -264,8 +321,19 @@ impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE:
             .collect();
         self.prob.update_bounds(&lb, &ub);
         let mut result = self.prob.solve();
-        let mut c = result.x().expect("Failed to solve QP problem!");
-        // Compute costs to set up the 2nd QP iteration
+        let mut c = match result.x() {
+            Some(x) => x,
+            None => {
+                pickle::to_writer(
+                    &mut File::create("OSQP_log.pkl").unwrap(),
+                    &(self.y_valid.clone(), self.u_ant.as_slice().to_vec()),
+                    Default::default(),
+                )
+                .unwrap();
+                panic!("Failed to solve QP problem!");
+            }
+        }; //.expect("Failed to solve QP problem!");
+           // Compute costs to set up the 2nd QP iteration
         let c_vec = SMatrix::<f64, N_MODE, 1>::from_vec(c.to_vec());
         let j_1na = {
             let epsilon = &y_vec - (&self.d_wfs * &c_vec);
@@ -280,16 +348,17 @@ impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE:
         // nalgebra object to f64 scalar conversion
         let j_1 = j_1na.get(0).unwrap();
         let j_3 = j_3na.get(0).unwrap();
+        //println!(" ===>>> J3: {:}:, J1: {:},RHO_3: {:}", j_3, j_1, self.rho_3);
         if *j_3 != 0f64 {
-            let mut rho_3 = j_1 / (j_3 * J1_J3_RATIO);
-            if rho_3 < MIN_RHO3 {
-                rho_3 = MIN_RHO3
+            self.rho_3 = j_1 / (j_3 * J1_J3_RATIO);
+            if self.rho_3 < MIN_RHO3 {
+                self.rho_3 = MIN_RHO3
             };
 
             // Update QP P matrix
             let p_utri = {
-                //                println!("New rho_3:{}", format!("{:.4e}", rho_3));
-                let p = self.d_t_w1_d + self.w2 + self.w3.scale(rho_3 * self.k * self.k);
+                //println!("New rho_3:{}", format!("{:.4e}", self.rho_3));
+                let p = self.d_t_w1_d + self.w2 + self.w3.scale(self.rho_3 * self.k * self.k);
                 CscMatrix::from_column_iter_dense(
                     p.nrows(),
                     p.ncols(),
@@ -300,29 +369,40 @@ impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE:
             self.prob.update_P(p_utri);
             // Update QP linear term
             q = (-y_vec.clone_owned().tr_mul(&self.d_wfs)
-                - self.u_ant.tr_mul(&self.w3).scale(rho_3 * self.k))
+                - self.u_ant.tr_mul(&self.w3).scale(self.rho_3 * self.k))
             .as_slice()
             .to_vec();
             self.prob.update_lin_cost(&q);
 
             // Solve problem - 2nd iteration
             result = self.prob.solve();
-            c = result.x().expect("Failed to solve QP problem!");
-            // Control action
-            let k = self.k;
-            self.u
-                .iter_mut()
-                .zip(&c[..M1_RBM])
-                .for_each(|(u, c)| *u -= k * c);
-            self.u[42..]
-                .iter_mut()
-                .zip(&c[M1_RBM..M1_RBM + M2_RBM])
-                .for_each(|(u, c)| *u -= k * c);
-            self.u[84..]
-                .iter_mut()
-                .zip(&c[M1_RBM + M2_RBM..])
-                .for_each(|(u, c)| *u -= k * c);
+            c = match result.x() {
+                Some(x) => x,
+                None => {
+                    pickle::to_writer(
+                        &mut File::create("OSQP_log.pkl").unwrap(),
+                        &(self.y_valid.clone(), self.u_ant.as_slice().to_vec()),
+                        Default::default(),
+                    )
+                    .unwrap();
+                    panic!("Failed to solve QP problem!");
+                }
+            }; //.expect("Failed to solve QP problem!");
         }
+        // Control action
+        let k = self.k;
+        self.u
+            .iter_mut()
+            .zip(&c[..M1_RBM])
+            .for_each(|(u, c)| *u -= k * c); // u = u - k * c
+        self.u[42..]
+            .iter_mut()
+            .zip(&c[M1_RBM..M1_RBM + M2_RBM])
+            .for_each(|(u, c)| *u -= k * c);
+        self.u[84..]
+            .iter_mut()
+            .zip(&c[M1_RBM + M2_RBM..])
+            .for_each(|(u, c)| *u -= k * c);
         Some(())
     }
 }
@@ -334,18 +414,40 @@ impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE:
     type Output = Vec<f64>;
 
     fn outputs(&mut self) -> Option<Vec<IO<Self::Output>>> {
-        let mut segment_bm = self.u[84..].chunks(M1_BM);
-        Some(ios!(
-            M1RBMcmd(self.u[..42].to_vec()),
-            M2poscmd(self.u[42..84].to_vec()),
-            M1S1BMcmd(segment_bm.next().unwrap().to_vec()),
-            M1S2BMcmd(segment_bm.next().unwrap().to_vec()),
-            M1S3BMcmd(segment_bm.next().unwrap().to_vec()),
-            M1S4BMcmd(segment_bm.next().unwrap().to_vec()),
-            M1S5BMcmd(segment_bm.next().unwrap().to_vec()),
-            M1S6BMcmd(segment_bm.next().unwrap().to_vec()),
-            M1S7BMcmd(segment_bm.next().unwrap().to_vec())
-        ))
+        match &self.coefs2forces {
+            Some(c2f) => {
+                let mut segment_bm = self.u[84..]
+                    .chunks(M1_BM)
+                    .map(|u| na::DVector::from_column_slice(u))
+                    .zip(c2f)
+                    .map(|(u, c2f)| c2f * u);
+                Some(ios!(
+                    M1RBMcmd(self.u[..42].to_vec()),
+                    M2poscmd(self.u[42..84].to_vec()),
+                    M1S1BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
+                    M1S2BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
+                    M1S3BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
+                    M1S4BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
+                    M1S5BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
+                    M1S6BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
+                    M1S7BMcmd(segment_bm.next().unwrap().as_slice().to_vec())
+                ))
+            }
+            None => {
+                let mut segment_bm = self.u[84..].chunks(M1_BM);
+                Some(ios!(
+                    M1RBMcmd(self.u[..42].to_vec()),
+                    M2poscmd(self.u[42..84].to_vec()),
+                    M1S1BMcmd(segment_bm.next().unwrap().to_vec()),
+                    M1S2BMcmd(segment_bm.next().unwrap().to_vec()),
+                    M1S3BMcmd(segment_bm.next().unwrap().to_vec()),
+                    M1S4BMcmd(segment_bm.next().unwrap().to_vec()),
+                    M1S5BMcmd(segment_bm.next().unwrap().to_vec()),
+                    M1S6BMcmd(segment_bm.next().unwrap().to_vec()),
+                    M1S7BMcmd(segment_bm.next().unwrap().to_vec())
+                ))
+            }
+        }
     }
 
     fn inputs(
