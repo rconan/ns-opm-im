@@ -111,7 +111,7 @@ NS OPM IM Timing:
                 .proportional_damping(2. / 100.)
                 .truncate_hankel_singular_values(1e-5)
                 .inputs_from(&[
-                    &wind_loading,
+                    //                    &wind_loading,
                     &mnt_drives,
                     &m1_hardpoints,
                     &m1_actuators,
