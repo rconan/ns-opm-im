@@ -422,29 +422,29 @@ impl<const M1_RBM: usize, const M2_RBM: usize, const M1_BM: usize, const N_MODE:
                     .zip(c2f)
                     .map(|(u, c2f)| c2f * u);
                 Some(ios!(
-                    M1RBMcmd(self.u[..42].to_vec()),
-                    M2poscmd(self.u[42..84].to_vec()),
                     M1S1BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
                     M1S2BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
                     M1S3BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
                     M1S4BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
                     M1S5BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
                     M1S6BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
-                    M1S7BMcmd(segment_bm.next().unwrap().as_slice().to_vec())
+                    M1S7BMcmd(segment_bm.next().unwrap().as_slice().to_vec()),
+                    M1RBMcmd(self.u[..42].to_vec()),
+                    M2poscmd(self.u[42..84].to_vec())
                 ))
             }
             None => {
                 let mut segment_bm = self.u[84..].chunks(M1_BM);
                 Some(ios!(
-                    M1RBMcmd(self.u[..42].to_vec()),
-                    M2poscmd(self.u[42..84].to_vec()),
                     M1S1BMcmd(segment_bm.next().unwrap().to_vec()),
                     M1S2BMcmd(segment_bm.next().unwrap().to_vec()),
                     M1S3BMcmd(segment_bm.next().unwrap().to_vec()),
                     M1S4BMcmd(segment_bm.next().unwrap().to_vec()),
                     M1S5BMcmd(segment_bm.next().unwrap().to_vec()),
                     M1S6BMcmd(segment_bm.next().unwrap().to_vec()),
-                    M1S7BMcmd(segment_bm.next().unwrap().to_vec())
+                    M1S7BMcmd(segment_bm.next().unwrap().to_vec()),
+                    M1RBMcmd(self.u[..42].to_vec()),
+                    M2poscmd(self.u[42..84].to_vec())
                 ))
             }
         }
