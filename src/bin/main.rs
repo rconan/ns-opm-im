@@ -7,29 +7,30 @@ use crseo::{
     shackhartmann::{Diffractive, Geometric, WavefrontSensorBuilder},
     Builder, Calibration, OpticalSensitivities, ShackHartmann, GMT, SH48, SOURCE,
 };
-use dosio::{ios, Dos, IOVec};
+use dosio::{ios, Dos, IOVec, IO};
 use fem::{
     dos::{DiscreteModalSolver, DiscreteStateSpace, Exponential},
     FEM,
 };
+use geotrans::{Quaternion, Vector};
 use indicatif::{ProgressBar, ProgressStyle};
 use m1_ctrl as m1;
 use mount_ctrl as mount;
 use nalgebra as na;
 use skyangle::Conversion;
-use std::{fs::File, path::Path, time::Instant};
+use std::{fs::File, io::BufWriter, path::Path, time::Instant};
 use windloading::WindLoads;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sim_duration = 15f64;
+    let sim_duration = 30f64;
     let sampling_rate = 1e3;
-    let wfs_delay = 10f64;
+    let wfs_delay = 2f64;
     let wfs_sample_delay = (sampling_rate * wfs_delay) as usize;
     let aco_delay = 1f64;
     let aco_sample_delay = (sampling_rate * aco_delay) as usize;
     let tiptilt_exposure_time = 5e-3;
     let tiptilt_sample_rate = (tiptilt_exposure_time * sampling_rate) as usize;
-    let aco_exposure_time = 1f64;
+    let aco_exposure_time = 2f64;
     let aco_sample_rate = (aco_exposure_time * sampling_rate) as usize;
     let m1_sampling_rate = 100f64;
     let m1_sample_rate = (sampling_rate / m1_sampling_rate) as usize;
@@ -67,8 +68,8 @@ NS OPM IM Timing:
     .range(0.0, sim_duration)
     .truss()?
     //.m2_asm_topend()?
-    .m1_segments()?
-    .m1_cell()?
+    //.m1_segments()?
+    //.m1_cell()?
     //    .m2_segments()?
     .build()?;
     println!("... in {}ms", now.elapsed().as_millis());
@@ -88,7 +89,7 @@ NS OPM IM Timing:
     let mut os_tiptilt = fsm::tiptilt::Controller::new();
     //FEM
     let now = Instant::now();
-    let (_m1_segments_surface_nodes, mut fem): (Vec<Vec<f64>>, DiscreteModalSolver<Exponential>) = {
+    let (m1_segments_surface_nodes, mut fem): (Vec<Vec<f64>>, DiscreteModalSolver<Exponential>) = {
         let fem = FEM::from_env()?;
         //println!("FEM:\n{}", fem);
         (
@@ -142,6 +143,7 @@ NS OPM IM Timing:
     let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH48<WfsType>>::new(Some(
         SOURCE::new().size(n_sensor).fwhm(6f64),
     ))
+    .gmt(GMT::new().m1("m1_eigen_modes", 329))
     .sensor(SH48::<WfsType>::new().n_sensor(n_sensor))
     /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
         26.,
@@ -176,31 +178,7 @@ NS OPM IM Timing:
         gmt2wfs.n_mode,
         now.elapsed().as_secs()
     );
-    let poke_sum = gmt2wfs.poke.from_dev().iter().sum::<f32>();
-    println!("Poke sum: {}", poke_sum);
     let wfs_2_m2rxy = gmt2wfs.qr();
-    let mut m2_seg_rbm = vec![vec![0f64; 6]; 7];
-    m2_seg_rbm[1][3] = 1e-6;
-    m2_seg_rbm[4][4] = 1e-6;
-    m2_seg_rbm[6][3] = 1e-6;
-    m2_seg_rbm[6][4] = 1e-6;
-
-    let m2_rbm = ios!(MCM2Lcl6D(m2_seg_rbm.into_iter().flatten().collect()));
-    //    gosm.inputs(vec![m2_rbm.clone()]).unwrap().step();
-    let y = gosm
-        .in_step_out(Some(vec![m2_rbm.clone()]))?
-        .and_then(|x| Into::<Option<Vec<f64>>>::into(x[0].clone()))
-        .map(|x| x.into_iter().map(|x| x as f32).collect::<Vec<f32>>())
-        .unwrap();
-
-    let a = wfs_2_m2rxy.solve(&mut y.into());
-    Vec::<f32>::from(a)
-        .into_iter()
-        .map(|x| x * 1e6)
-        .collect::<Vec<f32>>()
-        .chunks(2)
-        .enumerate()
-        .for_each(|x| println!("#{}: [{:+0.1},{:+0.1}]", 1 + x.0, x.1[0], x.1[1]));
 
     // - M1 27 eigen modes calibration matrix
     let n_aco_sensor = 3;
@@ -285,12 +263,11 @@ NS OPM IM Timing:
     .as_m1_actuator_forces()
     .build();
 
+    let optical_sensitivities = OpticalSensitivities::load()?;
+    let rxy_2_stt = &optical_sensitivities[3].m2_rxy()?;
+    let opticals = from_opticals(&optical_sensitivities[1..4]);
+
     // I/O initialization
-    let mut mount_drives_forces = Some(ios!(
-        OSSAzDriveTorque(vec![0f64; 12]),
-        OSSElDriveTorque(vec![0f64; 4]),
-        OSSRotDriveTorque(vec![0f64; 4])
-    ));
     let mut m1_actuators_forces = Some(ios!(
         M1ActuatorsSegment1(vec![0f64; 335]),
         M1ActuatorsSegment2(vec![0f64; 335]),
@@ -310,34 +287,14 @@ NS OPM IM Timing:
         M1S7BMcmd(vec![0f64; 306])
     );
     let mut m1_hardpoints_forces = Some(vec![ios!(OSSHarpointDeltaF(vec![0f64; 42]))]);
-    let mut fsm_positionner_forces = Some(vec![ios!(MCM2SmHexF(vec![0f64; 84]))]);
-    let mut fsm_piezostack_forces = Some(vec![ios!(MCM2PZTF(vec![0f64; 42]))]);
-
-    let mut fem_forces = vec![ios!(OSSTruss6F(vec![0f64; 36]))];
-    mount_drives_forces.as_mut().map(|x| {
-        fem_forces.append(x);
-    });
-    m1_hardpoints_forces.as_mut().map(|x| {
-        fem_forces.extend_from_slice(x);
-    });
-    m1_actuators_forces.as_mut().map(|x| {
-        fem_forces.extend_from_slice(x);
-    });
-    fsm_positionner_forces.as_mut().map(|x| {
-        fem_forces.append(x);
-    });
-    fsm_piezostack_forces.as_mut().map(|x| fem_forces.append(x));
-
-    let optical_sensitivities = OpticalSensitivities::load()?;
-    let rxy_2_stt = &optical_sensitivities[3].m2_rxy()?;
-    let opticals = from_opticals(&optical_sensitivities[1..4]);
-
+    let mut m1_rbm_cmd: Option<Vec<IO<Vec<f64>>>> = None;
+    let mut m2_pos_cmd = vec![ios!(M2poscmd(vec![0f64; 42]))];
     let mut pzt_cmd = Some(vec![ios!(TTcmd(vec![0f64; 21]))]);
-
-    let mut fem_outputs = fem.in_step_out(Some(fem_forces))?.unwrap();
+    let mut fem_outputs = fem.zeroed_outputs();
 
     let n_step = wind_loading.n_sample;
     let mut m1_logs = Vec::<Vec<f64>>::with_capacity(n_step * 42);
+    let mut m1_bm_logs = Vec::<Vec<f64>>::with_capacity(n_step * (329 * 6 + 300));
     let mut m2_logs = Vec::<Vec<f64>>::with_capacity(n_step * 42);
     //    let mut wfs_log = Vec::<f64>::with_capacity(n_step * 14 / wfs_sample_rate);
     let mut data_log = Vec::<f64>::with_capacity(n_step * 23);
@@ -352,7 +309,7 @@ NS OPM IM Timing:
     while let Some(mut fem_forces) = wind_loading.outputs() {
         //for k in 0..n_step {
         pb.inc(1);
-        //    let mut fem_forces = Vec::<IO<Vec<f64>>>::with_capacity(n_fem_forces);
+        //let mut fem_forces = vec![];
         // MOUNT
         fem_outputs
             .pop_these(ios!(
@@ -378,7 +335,7 @@ NS OPM IM Timing:
                 .pop_these(vec![ios!(OSSHardpointD)])
                 .and_then(|mut hp_d| {
                     m1_hardpoints_forces.as_mut().and_then(|hp_f| {
-                        hp_d.append(hp_f);
+                        hp_d.extend_from_slice(hp_f);
                         m1_load_cells.in_step_out(Some(hp_d)).unwrap()
                     })
                 })
@@ -390,9 +347,9 @@ NS OPM IM Timing:
         m1_actuators_forces.as_mut().map(|x| {
             fem_forces.extend_from_slice(x);
         });
-        m1_hardpoints_forces = m1_hardpoints
-            .in_step_out(Some(vec![ios!(M1RBMcmd(vec![0f64; 42]))]))
-            .unwrap();
+        if let Some(ref value) = m1_rbm_cmd {
+            m1_hardpoints_forces = m1_hardpoints.in_step_out(Some(value.to_owned())).unwrap();
+        }
         m1_hardpoints_forces.as_mut().map(|x| {
             fem_forces.extend_from_slice(x);
         });
@@ -401,7 +358,7 @@ NS OPM IM Timing:
         fem_outputs
             .pop_these(vec![ios!(MCM2SmHexD)])
             .and_then(|mut hex_d| {
-                hex_d.append(&mut vec![ios!(M2poscmd(vec![0f64; 42]))]);
+                hex_d.extend_from_slice(&mut m2_pos_cmd);
                 fsm_positionner.in_step_out(Some(hex_d)).unwrap()
             })
             .map(|mut fsm_positionner_forces| {
@@ -421,39 +378,73 @@ NS OPM IM Timing:
             });
         // FEM
         fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
+        let m1_rbm: Option<Vec<f64>> = fem_outputs[ios!(OSSM1Lcl)].clone().into();
+
+        let mut bm_coefs: Vec<f64> = ios!(
+            M1Segment1AxialD,
+            M1Segment2AxialD,
+            M1Segment3AxialD,
+            M1Segment4AxialD,
+            M1Segment5AxialD,
+            M1Segment6AxialD,
+            M1Segment7AxialD
+        )
+        .into_iter()
+        .filter_map(|io| fem_outputs.pop_this(io))
+        .filter_map(|x| Option::<Vec<f64>>::from(x))
+        .zip(&m1_segments_surface_nodes)
+        .zip(m1_rbm.as_ref().unwrap().chunks(6))
+        .map(|((shape, nodes), rbm)| {
+            let (t_xyz, r_xyz) = rbm.split_at(3);
+            let rxyz_surface = {
+                let q = Quaternion::unit(r_xyz[2], Vector::k())
+                    * Quaternion::unit(r_xyz[1], Vector::j())
+                    * Quaternion::unit(r_xyz[0], Vector::i());
+                let trans_nodes: Vec<f64> = nodes
+                    .chunks(3)
+                    .flat_map(|x| {
+                        let p: Quaternion = Vector::from(x).into();
+                        let w: Quaternion = &q * p * &q.complex_conjugate();
+                        Vec::<f64>::from(Vector::from(w.vector_as_slice()))
+                    })
+                    .collect();
+                trans_nodes
+                    .chunks(3)
+                    .map(|x| x[2])
+                    .zip(nodes.chunks(3).map(|x| x[2]))
+                    .map(|(z_rbm, z)| z_rbm - z)
+                    .collect::<Vec<f64>>()
+            };
+            shape
+                .iter()
+                .zip(rxyz_surface.iter())
+                .map(|(a, r)| a - r - t_xyz[2])
+                .collect::<Vec<f64>>()
+        })
+        .zip(&modes_t)
+        .map(|(m1_segment_figure, eigens)| {
+            { eigens * na::DVector::from_column_slice(&m1_segment_figure) }
+                .as_slice()
+                .to_vec()
+        })
+        .flat_map(|mut x| {
+            if x.len() < 329 {
+                x.append(&mut vec![0f64; 329 - x.len()])
+            }
+            x
+        })
+        .collect();
+        if let Some(ref mut atm) = gosm.atm {
+            atm.secs = k as f64 / sampling_rate;
+        }
+        bm_coefs[0] += 1e-6;
+        m1_bm_logs.push(bm_coefs.clone());
         // WFSing
         if k >= wfs_sample_delay {
-            let bm_coefs: Vec<f64> = ios!(
-                M1Segment1AxialD,
-                M1Segment2AxialD,
-                M1Segment3AxialD,
-                M1Segment4AxialD,
-                M1Segment5AxialD,
-                M1Segment6AxialD,
-                M1Segment7AxialD
-            )
-            .into_iter()
-            .filter_map(|io| Option::<Vec<f64>>::from(&fem_outputs[io]))
-            .zip(&modes_t)
-            .map(|(m1_segment_figure, eigens)| {
-                { eigens * na::DVector::from_column_slice(&m1_segment_figure) }
-                    .as_slice()
-                    .to_vec()
-            })
-            .flat_map(|mut x| {
-                if x.len() < 329 {
-                    x.append(&mut vec![0f64; 329 - x.len()])
-                }
-                x
-            })
-            .collect();
-            if let Some(ref mut atm) = gosm.atm {
-                atm.secs = k as f64 / sampling_rate;
-            }
             let os_gmt_state = Some(vec![
                 fem_outputs[ios!(OSSM1Lcl)].clone(),
                 fem_outputs[ios!(MCM2Lcl6D)].clone(),
-                ios!(M1modes(bm_coefs.clone())),
+                ios!(M1modes(bm_coefs)),
             ]);
             gosm.inputs(os_gmt_state.clone())
                 .unwrap()
@@ -482,6 +473,8 @@ NS OPM IM Timing:
                 gosm_aco.inputs(os_gmt_state).unwrap().step().unwrap();
                 if l % aco_sample_rate == 0 {
                     m1_bending_modes = aco.in_step_out(gosm_aco.outputs()).unwrap().unwrap();
+                    m2_pos_cmd = vec![m1_bending_modes.pop().unwrap()];
+                    m1_rbm_cmd = m1_bending_modes.pop().map(|x| vec![x]);
                 }
             }
         }
@@ -500,6 +493,144 @@ NS OPM IM Timing:
         // LOGS
         Option::<Vec<f64>>::from(&fem_outputs[ios!(OSSM1Lcl)]).map(|x| m1_logs.push(x));
         Option::<Vec<f64>>::from(&fem_outputs[ios!(MCM2Lcl6D)]).map(|x| m2_logs.push(x));
+
+        if k % 1000 == 0 {
+            let (tilts, segments): (Vec<_>, Vec<_>) = data_log
+                .iter()
+                .cloned()
+                .collect::<Vec<f64>>()
+                .chunks(23)
+                .map(|data| {
+                    let (a, b) = data.split_at(2);
+                    (a.to_vec(), b.to_vec())
+                })
+                .unzip();
+            let (segments_piston, _segments_tilts): (Vec<_>, Vec<_>) = segments
+                .iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<f64>>()
+                .chunks(21)
+                .map(|data| {
+                    let (a, b) = data.split_at(7);
+                    (a.to_vec(), b.to_vec())
+                })
+                .unzip();
+            let mut wfe_rms = vec![];
+            for mut bm in m1_bm_logs.clone() {
+                let mut b_rss = vec![];
+                for n in [329, 329, 329, 329, 329, 329, 300] {
+                    let b = bm.drain(..n);
+                    b_rss.push(b.into_iter().map(|x| x * x).sum::<f64>().sqrt());
+                }
+                wfe_rms.push(b_rss);
+            }
+
+            Plot::from((
+                tilts
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<f64>>()
+                    .chunks(2)
+                    .enumerate()
+                    .map(|(k, tilts)| {
+                        (
+                            k as f64 / sampling_rate,
+                            tilts.iter().map(|x| x.to_mas()).collect::<Vec<f64>>(),
+                        )
+                    }),
+                Some(
+                    Config::new()
+                        .filename("ns-opm-im_tilts.svg")
+                        .xaxis(Axis::new().label("Time [s]"))
+                        .yaxis(Axis::new().label("Tip-tilt [mas]")),
+                ),
+            ));
+
+            Plot::from((
+                segments_piston
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<f64>>()
+                    .chunks(7)
+                    .enumerate()
+                    .map(|(k, pistons)| {
+                        (
+                            k as f64 / sampling_rate,
+                            pistons.iter().map(|x| x * 1e6).collect::<Vec<f64>>(),
+                        )
+                    }),
+                Some(
+                    Config::new()
+                        .filename("ns-opm-im_pistons.svg")
+                        .xaxis(Axis::new().label("Time [s]"))
+                        .yaxis(Axis::new().label("Piston [micron]")),
+                ),
+            ));
+
+            Plot::from((
+                wfe_rms.into_iter().enumerate().map(|(k, wfe_rms)| {
+                    (
+                        k as f64 / sampling_rate,
+                        wfe_rms.iter().map(|x| x * 1e6).collect::<Vec<f64>>(),
+                    )
+                }),
+                Some(
+                    Config::new()
+                        .filename("ns-opm-im_wfes.svg")
+                        .xaxis(Axis::new().label("Time [s]"))
+                        .yaxis(Axis::new().label("WFE RMS [micron]")),
+                ),
+            ));
+
+            let mut m1_segment_rbm = vec![vec![]; 7];
+            m1_logs.iter().for_each(|m1_rbms| {
+                m1_rbms
+                    .chunks(6)
+                    .zip(&mut m1_segment_rbm)
+                    .for_each(|(c, r)| r.push(c))
+            });
+            m1_segment_rbm.into_iter().enumerate().for_each(|(sid, x)| {
+                Plot::from((
+                    x.into_iter().enumerate().map(|(k, wfe_rms)| {
+                        (
+                            k as f64 / sampling_rate,
+                            wfe_rms.iter().map(|x| x * 1e6).collect::<Vec<f64>>(),
+                        )
+                    }),
+                    Some(
+                        Config::new()
+                            .filename(&format!("ns-opm-im_m1-s{}-rbm.svg", sid + 1))
+                            .xaxis(Axis::new().label("Time [s]"))
+                            .yaxis(Axis::new().label("WFE RMS [micron]")),
+                    ),
+                ));
+            });
+
+            let mut m2_segment_rbm = vec![vec![]; 7];
+            m2_logs.iter().for_each(|m2_rbms| {
+                m2_rbms
+                    .chunks(6)
+                    .zip(&mut m2_segment_rbm)
+                    .for_each(|(c, r)| r.push(c))
+            });
+            m2_segment_rbm.into_iter().enumerate().for_each(|(sid, x)| {
+                Plot::from((
+                    x.into_iter().enumerate().map(|(k, wfe_rms)| {
+                        (
+                            k as f64 / sampling_rate,
+                            wfe_rms.iter().map(|x| x * 1e6).collect::<Vec<f64>>(),
+                        )
+                    }),
+                    Some(
+                        Config::new()
+                            .filename(&format!("ns-opm-im_m2-s{}-rbm.svg", sid + 1))
+                            .xaxis(Axis::new().label("Time [s]"))
+                            .yaxis(Axis::new().label("WFE RMS [micron]")),
+                    ),
+                ));
+            });
+        }
     }
     pb.finish();
     let eta = now.elapsed();
@@ -510,134 +641,9 @@ NS OPM IM Timing:
         eta.as_millis() as f64 / n_step as f64
     );
 
-    let (tilts, segments): (Vec<_>, Vec<_>) = data_log
-        .into_iter()
-        .collect::<Vec<f64>>()
-        .chunks(23)
-        .map(|data| {
-            let (a, b) = data.split_at(2);
-            (a.to_vec(), b.to_vec())
-        })
-        .unzip();
-    let (segments_piston, _segments_tilts): (Vec<_>, Vec<_>) = segments
-        .into_iter()
-        .flatten()
-        .collect::<Vec<f64>>()
-        .chunks(21)
-        .map(|data| {
-            let (a, b) = data.split_at(7);
-            (a.to_vec(), b.to_vec())
-        })
-        .unzip();
+    let file = File::create("ns-opm-im_gmt-logs.pkl")?;
+    let mut buf = BufWriter::with_capacity(1_000_000, file);
+    serde_pickle::to_writer(&mut buf, &(m1_logs, m2_logs, m1_bm_logs), true)?;
 
-    Plot::from((
-        tilts
-            .into_iter()
-            .flatten()
-            .collect::<Vec<f64>>()
-            .chunks(2)
-            .enumerate()
-            .map(|(k, tilts)| {
-                (
-                    k as f64 / sampling_rate,
-                    tilts.iter().map(|x| x.to_mas()).collect::<Vec<f64>>(),
-                )
-            }),
-        Some(
-            Config::new()
-                .filename("ns-opm-im_tilts.svg")
-                .xaxis(Axis::new().label("Time [s]"))
-                .yaxis(Axis::new().label("Tip-tilt [mas]")),
-        ),
-    ));
-
-    Plot::from((
-        segments_piston
-            .into_iter()
-            .flatten()
-            .collect::<Vec<f64>>()
-            .chunks(7)
-            .enumerate()
-            .map(|(k, pistons)| {
-                (
-                    k as f64 / sampling_rate,
-                    pistons.iter().map(|x| x * 1e6).collect::<Vec<f64>>(),
-                )
-            }),
-        Some(
-            Config::new()
-                .filename("ns-opm-im_pistons.svg")
-                .xaxis(Axis::new().label("Time [s]"))
-                .yaxis(Axis::new().label("Piston [micron]")),
-        ),
-    ));
-
-    /*
-    Plot::from((
-        m1_axial
-            .into_iter()
-            .collect::<Vec<f64>>()
-            .chunks(7)
-            .enumerate()
-            .map(|(k, y)| {
-                (
-                    k as f64 / sampling_rate,
-                    y.iter().map(|y| y * 1e6).collect::<Vec<f64>>(),
-                )
-            }),
-        Some(
-            Config::new()
-                .filename("ns-opm-im_m1-sfe-rms.svg")
-                .xaxis(Axis::new().label("Time [s]"))
-                .yaxis(Axis::new().label("M1 axial rms sfe [micron]")),
-        ),
-    ));*/
-
-    /*
-        let iter1: Vec<(f64, Vec<f64>)> = segments_tilts
-            .into_iter()
-            .flatten()
-            .collect::<Vec<f64>>()
-            .chunks(14)
-            //.flat_map(|x| x.chunks(2).map(|x| x[0].hypot(x[1])).collect::<Vec<f64>>())
-            .flat_map(|x| (0..7).map(|k| x[k].hypot(x[k + 7])).collect::<Vec<f64>>())
-            .collect::<Vec<f64>>()
-            .chunks(7)
-            .enumerate()
-            .map(|(k, tilts)| {
-                (
-                    k as f64 / sampling_rate,
-                    tilts.iter().map(|x| x.to_mas()).collect::<Vec<f64>>(),
-                )
-            })
-            .collect();
-        let iter2: Vec<(f64, Vec<f64>)> = wfs_log
-            .chunks(14)
-            .flat_map(|x| x.chunks(2).map(|x| x[0].hypot(x[1])).collect::<Vec<f64>>())
-            .collect::<Vec<f64>>()
-            .chunks(7)
-            .enumerate()
-            .map(|(k, tilts)| {
-                (
-                    (k * wfs_sample_rate + wfs_delay) as f64 / sampling_rate,
-                    tilts
-                        .iter()
-                        .map(|x| 0.25 * x.to_mas())
-                        .collect::<Vec<f64>>(),
-                )
-            })
-            .collect();
-
-        let mut config = Config::new()
-            .filename("ns-opm-im_m2-rxy.svg")
-            .xaxis(Axis::new().label("Time [s]"))
-            .yaxis(Axis::new().label("Segment tip-tilt mag. [mas]"));
-        config.auto_range(vec![&iter1, &iter2]);
-        <Combo as From<Complot>>::from((
-            vec![Box::new(iter1.into_iter()), Box::new(iter2.into_iter())],
-            vec![Kind::Plot, Kind::Scatter],
-            Some(config),
-        ));
-    */
     Ok(())
 }
