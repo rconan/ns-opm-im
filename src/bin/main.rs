@@ -22,15 +22,15 @@ use std::{fs::File, io::BufWriter, path::Path, time::Instant};
 use windloading::WindLoads;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sim_duration = 30f64;
+    let sim_duration = 60f64;
     let sampling_rate = 1e3;
-    let wfs_delay = 2f64;
+    let wfs_delay = 10f64;
     let wfs_sample_delay = (sampling_rate * wfs_delay) as usize;
     let aco_delay = 1f64;
     let aco_sample_delay = (sampling_rate * aco_delay) as usize;
     let tiptilt_exposure_time = 5e-3;
     let tiptilt_sample_rate = (tiptilt_exposure_time * sampling_rate) as usize;
-    let aco_exposure_time = 2f64;
+    let aco_exposure_time = 5f64;
     let aco_sample_rate = (aco_exposure_time * sampling_rate) as usize;
     let m1_sampling_rate = 100f64;
     let m1_sample_rate = (sampling_rate / m1_sampling_rate) as usize;
@@ -67,10 +67,10 @@ NS OPM IM Timing:
     )?
     .range(0.0, sim_duration)
     .truss()?
-    //.m2_asm_topend()?
-    //.m1_segments()?
-    //.m1_cell()?
-    //    .m2_segments()?
+    .m1_segments()?
+    .m1_cell()?
+    .m2_asm_topend()?
+    .m2_segments_into(ios!(MCM2LclForce6F))?
     .build()?;
     println!("... in {}ms", now.elapsed().as_millis());
 
@@ -111,7 +111,7 @@ NS OPM IM Timing:
                 .proportional_damping(2. / 100.)
                 .truncate_hankel_singular_values(1e-5)
                 .inputs_from(&[
-                    //                    &wind_loading,
+                    &wind_loading,
                     &mnt_drives,
                     &m1_hardpoints,
                     &m1_actuators,
@@ -380,7 +380,7 @@ NS OPM IM Timing:
         fem_outputs = fem.in_step_out(Some(fem_forces)).unwrap().unwrap();
         let m1_rbm: Option<Vec<f64>> = fem_outputs[ios!(OSSM1Lcl)].clone().into();
 
-        let mut bm_coefs: Vec<f64> = ios!(
+        let bm_coefs: Vec<f64> = ios!(
             M1Segment1AxialD,
             M1Segment2AxialD,
             M1Segment3AxialD,
@@ -437,7 +437,7 @@ NS OPM IM Timing:
         if let Some(ref mut atm) = gosm.atm {
             atm.secs = k as f64 / sampling_rate;
         }
-        bm_coefs[0] += 1e-6;
+        //        bm_coefs[0] += 1e-6;
         m1_bm_logs.push(bm_coefs.clone());
         // WFSing
         if k >= wfs_sample_delay {
