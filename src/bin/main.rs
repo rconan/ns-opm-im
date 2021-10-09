@@ -66,6 +66,8 @@ NS OPM IM Timing:
         Path::new("data").join("b2019_0z_30az_os_7ms.wind_loads_1kHz_100-400s.pkl"),
     )?
     .range(0.0, sim_duration)
+    .cring()?
+    .gir()?
     .truss()?
     .m1_segments()?
     .m1_cell()?
