@@ -5,7 +5,7 @@ use crseo::{
     dos::GmtOpticalSensorModel,
     from_opticals,
     shackhartmann::{Diffractive, Geometric, WavefrontSensorBuilder},
-    Builder, Calibration, OpticalSensitivities, ShackHartmann, GMT, SH48, SOURCE,
+    Builder, Calibration, OpticalSensitivities, ShackHartmann, GMT, SH24, SH48, SOURCE,
 };
 use dosio::{ios, Dos, IOVec, IO};
 use fem::{
@@ -142,11 +142,11 @@ NS OPM IM Timing:
     // CEO WFSS
     let n_sensor = 1;
     type WfsType = Diffractive;
-    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH48<WfsType>>::new(Some(
-        SOURCE::new().size(n_sensor).fwhm(6f64),
+    let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH24<WfsType>>::new(Some(
+        SOURCE::new().band("VIS").size(n_sensor).fwhm(6f64),
     ))
     .gmt(GMT::new().m1("m1_eigen_modes", 329))
-    .sensor(SH48::<WfsType>::new().n_sensor(n_sensor))
+    .sensor(SH24::<WfsType>::new())
     /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
         26.,
         520,
@@ -161,11 +161,7 @@ NS OPM IM Timing:
     println!("M2 mode: {}", gosm.gmt.get_m2_mode_type());
     println!("GS band: {}", gosm.src.get_photometric_band());
 
-    let mut gmt2wfs = Calibration::new(
-        &gosm.gmt,
-        &gosm.src,
-        SH48::<Geometric>::new().n_sensor(n_sensor),
-    );
+    let mut gmt2wfs = Calibration::new(&gosm.gmt, &gosm.src, SH24::<Geometric>::new());
     let mirror = vec![calibrations::Mirror::M2];
     let segments = vec![vec![calibrations::Segment::Rxyz(1e-6, Some(0..2))]; 7];
     let now = Instant::now();
@@ -186,6 +182,7 @@ NS OPM IM Timing:
     let n_aco_sensor = 3;
     let mut gosm_aco = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH48<WfsType>>::new(Some(
         SOURCE::new()
+            .band("VIS")
             .size(n_aco_sensor)
             .on_ring(6f32.from_arcmin())
             .fwhm(6f64),
@@ -436,9 +433,9 @@ NS OPM IM Timing:
             x
         })
         .collect();
-        if let Some(ref mut atm) = gosm.atm {
+        /*if let Some(ref mut atm) = gosm.atm {
             atm.secs = k as f64 / sampling_rate;
-        }
+        }*/
         //        bm_coefs[0] += 1e-6;
         m1_bm_logs.push(bm_coefs.clone());
         // WFSing
