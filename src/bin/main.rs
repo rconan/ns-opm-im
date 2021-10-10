@@ -17,6 +17,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use m1_ctrl as m1;
 use mount_ctrl as mount;
 use nalgebra as na;
+use ns_opm_im::control::{Control, Delay};
 use skyangle::Conversion;
 use std::{fs::File, io::BufWriter, path::Path, time::Instant};
 use windloading::WindLoads;
@@ -87,6 +88,8 @@ NS OPM IM Timing:
     let mut fsm_positionner = fsm::positionner::Controller::new();
     let mut fsm_piezostack = fsm::piezostack::Controller::new();
     // Optical System
+    // - 1 sample delay
+    let mut delay_1 = Delay::new(1, 14);
     // - tipt-tilt
     let mut os_tiptilt = fsm::tiptilt::Controller::new();
     //FEM
@@ -464,6 +467,7 @@ NS OPM IM Timing:
                         .as_slice()
                         .to_vec()
                     })
+                    .and_then(|stt| delay_1.step(&stt))
                     .map(|stt| os_tiptilt.in_step_out(Some(ios!(TTSP(vec![0f64]), TTFB(stt)))))
                     .unwrap()?;
             }
