@@ -10,10 +10,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (m1_rbm_logs, m2_rbm_logs, m1_bm_logs): (Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>) =
         serde_pickle::from_reader(buf)?;
 
+    let m1_n_mode = 330;
     let mut gom = GmtOpticalModel::new()
-        .gmt(GMT::new().m1("m1_eigen_modes", 329))
+        .gmt(GMT::new().m1("m1_eigen-modes_raw-polishing", m1_n_mode))
         .output(ios!(SrcSegmentWfeRms))
         .build()?;
+    gom.gmt.a1 = (0..7)
+        .flat_map(|_| {
+            let mut a1 = vec![0f64; m1_n_mode];
+            a1[m1_n_mode - 1] = 1f64;
+            a1
+        })
+        .collect();
+    gom.gmt.reset();
 
     let n_sample = m1_rbm_logs.len();
     let mut segment_wfe_rms = Vec::<Option<Vec<f64>>>::with_capacity(n_sample);
@@ -61,6 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .yaxis(Axis::new().label("Segment WFE RMS [nm]")),
         ),
     ));
+
+    let phase: Vec<_> = gom.src.phase().iter().map(|&x| x as f64 * 1e6).collect();
+    let _: complot::Heatmap = ((phase.as_slice(), (512, 512)), None).into();
 
     Ok(())
 }

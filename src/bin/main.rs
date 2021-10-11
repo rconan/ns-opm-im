@@ -145,10 +145,11 @@ NS OPM IM Timing:
     // CEO WFSS
     let n_sensor = 1;
     type WfsType = Diffractive;
+    let m1_n_mode = 330;
     let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH24<WfsType>>::new(Some(
         SOURCE::new().band("VIS").size(n_sensor).fwhm(6f64),
     ))
-    .gmt(GMT::new().m1("m1_eigen_modes", 329))
+    .gmt(GMT::new().m1("m1_eigen-modes_raw-polishing", m1_n_mode))
     .sensor(SH24::<WfsType>::new())
     /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
         26.,
@@ -159,6 +160,14 @@ NS OPM IM Timing:
         Some(8),
     ))*/
     .build()?;
+    gosm.gmt.a1 = (0..7)
+        .flat_map(|_| {
+            let mut a1 = vec![0f64; m1_n_mode];
+            a1[m1_n_mode - 1] = 1f64;
+            a1
+        })
+        .collect();
+    gosm.gmt.reset();
 
     println!("M1 mode: {}", gosm.gmt.get_m1_mode_type());
     println!("M2 mode: {}", gosm.gmt.get_m2_mode_type());
@@ -190,7 +199,7 @@ NS OPM IM Timing:
             .on_ring(6f32.from_arcmin())
             .fwhm(6f64),
     ))
-    .gmt(GMT::new().m1("m1_eigen_modes", 329))
+    .gmt(GMT::new().m1("m1_eigen-modes_raw-polishing", m1_n_mode))
     .sensor(SH48::<WfsType>::new().n_sensor(n_aco_sensor))
     /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
         26.,
@@ -201,6 +210,14 @@ NS OPM IM Timing:
         Some(8),
     ))*/
     .build()?;
+    gosm_aco.gmt.a1 = (0..7)
+        .flat_map(|_| {
+            let mut a1 = vec![0f64; m1_n_mode];
+            a1[m1_n_mode - 1] = 1f64;
+            a1
+        })
+        .collect();
+    gosm_aco.gmt.reset();
 
     // WFS Calibration
     use calibrations::Mirror::*;
