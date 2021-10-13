@@ -159,13 +159,15 @@ NS OPM IM Timing:
     ))
     .sensor(SH24::<WfsType>::new())
     /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
-        26.,
-        520,
-        0.,
-        25.,
-        Some("ns-opm-im_atm.bin".to_string()),
-        Some(8),
+            26.,
+            520,
+            0.,
+            25.,
+            Some("ns-opm-im_atm.bin".to_string()),
+            Some(8),
     ))*/
+    .dome_seeing("b2019_0z_0az_os_7ms", sim_duration, sampling_rate, None)
+    .await?
     .build()?;
     gosm.gmt.a1 = (0..7)
         .flat_map(|_| {
@@ -221,6 +223,8 @@ NS OPM IM Timing:
         Some("ns-opm-im_atm.bin".to_string()),
         Some(8),
     ))*/
+    .dome_seeing("b2019_0z_0az_os_7ms", sim_duration, sampling_rate, None)
+    .await?
     .build()?;
     gosm_aco.gmt.a1 = (0..7)
         .flat_map(|_| {
