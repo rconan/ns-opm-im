@@ -10,29 +10,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (m1_rbm_logs, m2_rbm_logs, m1_bm_logs): (Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>) =
         serde_pickle::from_reader(buf)?;
 
-    let m1_n_mode = 330;
+    let m1_n_mode = 332;
+    let soak_delta_temperature = 10f64;
     let mut gom = GmtOpticalModel::new()
-        .gmt(GMT::new().m1("m1_eigen-modes_raw-polishing", m1_n_mode))
+        .gmt(GMT::new().m1(
+            "m1_eigen-modes_raw-polishing_print-through_soak1deg",
+            m1_n_mode,
+        ))
         .output(ios!(SrcSegmentWfeRms))
         .build()?;
     gom.gmt.a1 = (0..7)
         .flat_map(|_| {
             let mut a1 = vec![0f64; m1_n_mode];
-            a1[m1_n_mode - 1] = 1f64;
+            a1[m1_n_mode - 3] = 1f64;
+            a1[m1_n_mode - 2] = 1f64;
+            a1[m1_n_mode - 1] = soak_delta_temperature;
             a1
         })
         .collect();
     gom.gmt.reset();
 
+    let n_skip = 11_000;
     let n_sample = m1_rbm_logs.len();
     let mut segment_wfe_rms = Vec::<Option<Vec<f64>>>::with_capacity(n_sample);
-    let pb = ProgressBar::new(n_sample as u64);
+    let pb = ProgressBar::new((n_sample - n_skip) as u64);
     pb.set_style(
         ProgressStyle::default_bar()
             .template("[{duration_precise}] {bar:60.cyan/blue} [{eta_precise}]")
-            .progress_chars("=|-"),
+            .progress_chars("=|~"),
     );
-    let n_skip = 11_000;
     for ((m1_rbm, m2_rbm), m1_bm) in m1_rbm_logs
         .iter()
         .zip(&m2_rbm_logs)
@@ -71,7 +77,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ));
 
-    let phase: Vec<_> = gom.src.phase().iter().map(|&x| x as f64 * 1e6).collect();
+    let phase: Vec<_> = gom
+        .src
+        .segment_phase()
+        .iter()
+        .map(|&x| x as f64 * 1e6)
+        .collect();
     let _: complot::Heatmap = ((phase.as_slice(), (512, 512)), None).into();
 
     Ok(())

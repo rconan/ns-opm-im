@@ -22,7 +22,10 @@ use skyangle::Conversion;
 use std::{fs::File, io::BufWriter, path::Path, time::Instant};
 use windloading::WindLoads;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+
     let sim_duration = 60f64;
     let sampling_rate = 1e3;
     let wfs_delay = 10f64;
@@ -145,11 +148,15 @@ NS OPM IM Timing:
     // CEO WFSS
     let n_sensor = 1;
     type WfsType = Diffractive;
-    let m1_n_mode = 330;
+    let m1_n_mode = 332;
+    let soak_delta_temperature = 10f64;
     let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH24<WfsType>>::new(Some(
         SOURCE::new().band("VIS").size(n_sensor).fwhm(6f64),
     ))
-    .gmt(GMT::new().m1("m1_eigen-modes_raw-polishing", m1_n_mode))
+    .gmt(GMT::new().m1(
+        "m1_eigen-modes_raw-polishing_print-through_soak1deg",
+        m1_n_mode,
+    ))
     .sensor(SH24::<WfsType>::new())
     /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
         26.,
@@ -163,7 +170,9 @@ NS OPM IM Timing:
     gosm.gmt.a1 = (0..7)
         .flat_map(|_| {
             let mut a1 = vec![0f64; m1_n_mode];
-            a1[m1_n_mode - 1] = 1f64;
+            a1[m1_n_mode - 3] = 1f64;
+            a1[m1_n_mode - 2] = 1f64;
+            a1[m1_n_mode - 1] = soak_delta_temperature;
             a1
         })
         .collect();
@@ -199,7 +208,10 @@ NS OPM IM Timing:
             .on_ring(6f32.from_arcmin())
             .fwhm(6f64),
     ))
-    .gmt(GMT::new().m1("m1_eigen-modes_raw-polishing", m1_n_mode))
+    .gmt(GMT::new().m1(
+        "m1_eigen-modes_raw-polishing_print-through_soak1deg",
+        m1_n_mode,
+    ))
     .sensor(SH48::<WfsType>::new().n_sensor(n_aco_sensor))
     /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
         26.,
@@ -213,7 +225,9 @@ NS OPM IM Timing:
     gosm_aco.gmt.a1 = (0..7)
         .flat_map(|_| {
             let mut a1 = vec![0f64; m1_n_mode];
-            a1[m1_n_mode - 1] = 1f64;
+            a1[m1_n_mode - 3] = 1f64;
+            a1[m1_n_mode - 2] = 1f64;
+            a1[m1_n_mode - 1] = soak_delta_temperature;
             a1
         })
         .collect();
