@@ -3,18 +3,12 @@ use crseo::{dos::GmtOpticalModel, Builder, GMT, SOURCE};
 use dosio::{ios, Dos, IOVec};
 use indicatif::{ProgressBar, ProgressStyle};
 use skyangle::Conversion;
-use std::{fs::File, io::BufReader};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let file = File::open("ns-opm-im_gmt-logs.pkl")?;
-    let buf = BufReader::with_capacity(1_000_000, file);
-    let (m1_rbm_logs, m2_rbm_logs, m1_bm_logs): (Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>) =
-        serde_pickle::from_reader(buf)?;
-
-    let sim_duration = 60f64;
+    let sim_duration = 310f64;
     let sampling_rate = 1e3;
 
     let atm_duration = 20f32;
@@ -45,9 +39,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ray_tracing(
                     25.5,
                     atm_sampling,
-                    20f32.from_arcmin(),
+                    20f32.from_arcmin() ,
                     atm_duration,
-                    Some("atmosphere/ns-opm-im_atm.sh48.bin".to_string()),
+                    Some("atmosphere/ns-opm-im_atm.bin".to_string()),
                     atm_n_duration,
                 ),
         )
@@ -65,8 +59,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     gom.gmt.reset();
 
+    let os_gmt_state = Some(ios!(
+        OSSM1Lcl(vec![0f64; 42]),
+        MCM2Lcl6D(vec![0f64; 42]),
+        M1modes(vec![0f64; m1_n_mode * 7])
+    ));
+
     let n_skip = 0;
-    let n_sample = m1_rbm_logs.len();
+    let n_sample = (sampling_rate * sim_duration) as usize;
     let mut segment_wfe_rms = Vec::<Option<Vec<f64>>>::with_capacity(n_sample);
     let pb = ProgressBar::new((n_sample - n_skip) as u64);
     pb.set_style(
@@ -74,24 +74,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .template("[{duration_precise}] {bar:60.cyan/blue} [{eta_precise}]")
             .progress_chars("=|~"),
     );
-    for (k, ((m1_rbm, m2_rbm), m1_bm)) in m1_rbm_logs
-        .iter()
-        .zip(&m2_rbm_logs)
-        .zip(&m1_bm_logs)
-        .skip(n_skip)
-        .enumerate()
-    {
+    for k in 0..n_sample {
         pb.inc(1);
         if let Some(ref mut atm) = gom.atm {
             atm.secs = k as f64 / sampling_rate;
         }
-        let mut data = gom
-            .in_step_out(Some(ios!(
-                OSSM1Lcl(m1_rbm.to_owned()),
-                MCM2Lcl6D(m2_rbm.to_owned()),
-                M1modes(m1_bm.to_owned())
-            )))?
-            .unwrap();
+        let mut data = gom.in_step_out(os_gmt_state.clone())?.unwrap();
         segment_wfe_rms.push(data.pop_this(ios!(SrcSegmentWfeRms)).unwrap().into());
     }
     pb.finish();
@@ -110,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         Some(
             Config::new()
-                .filename("ns-opm-im_segment-wfe-rms.svg")
+                .filename("ns-opm-im_segment-wfe-rms_wo-aco.svg")
                 .xaxis(Axis::new().label("Time [s]"))
                 .yaxis(Axis::new().label("Segment WFE RMS [nm]")),
         ),
@@ -122,7 +110,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|&x| x as f64 * 1e6)
         .collect();
-    let _: complot::Heatmap = ((phase.as_slice(), (n_px, n_px)), None).into();
+    let _: complot::Heatmap = (
+        (phase.as_slice(), (n_px, n_px)),
+        Some(complot::Config::new().filename("on_axis_wo-aco_wavefront.png")),
+    )
+        .into();
 
     Ok(())
 }

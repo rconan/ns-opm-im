@@ -2,15 +2,18 @@
 name = "ns-opm-im"
 version = "0.1.0"
 edition = "2018"
+default-run = "main"
 
 [workspace]
 members = ["fsm","active_optics"]
 
 [dependencies]
 colorous = "1.0.5"
-crseo = { git = "https://github.com/rconan/crseo.git", branch = "ns-opm-im", features = ["dos"] }
+#crseo = { git = "https://github.com/rconan/crseo.git", branch = "ns-opm-im", features = ["dos"] }
+crseo = { path = "../crseo", features = ["dos"] }
 dosio = { git = "https://github.com/rconan/dosio.git", branch = "ns-opm-im" }
-fem = { git = "https://github.com/rconan/fem.git", branch = "ns-opm-im", features = ["dos"] }
+#fem = { git = "https://github.com/rconan/fem.git", branch = "ns-opm-im", features = ["dos"] }
+fem = { path = "../fem", features = ["dos"] }
 geotrans = { git = "https://github.com/rconan/geotrans.git", branch = "main" }
 humantime = "2.1.0"
 indicatif = "0.16.2"
@@ -34,9 +37,10 @@ rayon = "1.5.1"
 nalgebra = "0.29.0"
 spade = "1.8.2"
 active_optics = { path = "active_optics" }
-complot = "^0.2"
+complot = { version = "0.3.1", features = ["svg"] }
 tokio = { version = "^1.0", features = ["rt"] }
 env_logger = "0.9.0"
+log = "0.4.14"
 
 [dev-dependencies]
 criterion = "0.3"

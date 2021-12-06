@@ -14,12 +14,12 @@ fn mount_zeros() {
     let sampling_rate = 1e3;
     let mut fem = {
         let fem = FEM::from_env().unwrap();
-        println!("FEM\n{}", fem);
+        println!("FEM eigen frequencies: {:?}", &fem.eigen_frequencies[..5]);
         DiscreteStateSpace::from(fem)
     }
     .sampling(sampling_rate)
     .proportional_damping(2. / 100.)
-    .inputs_from(&mnt_drives)
+    .inputs_from(&[&mnt_drives])
     .outputs(ios!(OSSM1Lcl, MCM2Lcl6D))
     .outputs(ios!(
         OSSAzEncoderAngle,
@@ -107,7 +107,7 @@ fn mount_constants() {
     }
     .sampling(sampling_rate)
     .proportional_damping(2. / 100.)
-    .inputs_from(&mnt_drives)
+    .inputs_from(&[&mnt_drives])
     .inputs(vec![ios!(OSSM1Lcl6F)])
     .outputs(ios!(OSSM1Lcl, MCM2Lcl6D))
     .outputs(ios!(

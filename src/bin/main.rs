@@ -14,10 +14,12 @@ use fem::{
 };
 use geotrans::{Quaternion, Vector};
 use indicatif::{ProgressBar, ProgressStyle};
+use log;
 use m1_ctrl as m1;
 use mount_ctrl as mount;
 use nalgebra as na;
 use ns_opm_im::control::{Control, Delay};
+use serde_pickle as pickle;
 use skyangle::Conversion;
 use std::{fs::File, io::BufWriter, path::Path, time::Instant};
 use windloading::WindLoads;
@@ -26,7 +28,7 @@ use windloading::WindLoads;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let sim_duration = 60f64;
+    let sim_duration = 310f64;
     let sampling_rate = 1e3;
     let wfs_delay = 10f64;
     let wfs_sample_delay = (sampling_rate * wfs_delay) as usize;
@@ -34,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let aco_sample_delay = (sampling_rate * aco_delay) as usize;
     let tiptilt_exposure_time = 5e-3;
     let tiptilt_sample_rate = (tiptilt_exposure_time * sampling_rate) as usize;
-    let aco_exposure_time = 5f64;
+    let aco_exposure_time = 30f64;
     let aco_sample_rate = (aco_exposure_time * sampling_rate) as usize;
     let m1_sampling_rate = 100f64;
     let m1_sample_rate = (sampling_rate / m1_sampling_rate) as usize;
@@ -150,6 +152,17 @@ NS OPM IM Timing:
     type WfsType = Diffractive;
     let m1_n_mode = 332;
     let soak_delta_temperature = 10f64;
+    let atm_duration = 20f32;
+    let atm_n_duration = Some((sim_duration / atm_duration as f64).ceil() as i32);
+    let atm_sampling = 48 * 16 + 1;
+    atm_n_duration.map(|atm_n_duration| {
+        log::info!(
+            "Atmosphere duration: {}x{}={}s",
+            atm_duration,
+            atm_n_duration,
+            atm_duration * atm_n_duration as f32,
+        )
+    });
     let mut gosm = GmtOpticalSensorModel::<ShackHartmann<WfsType>, SH24<WfsType>>::new(Some(
         SOURCE::new().band("VIS").size(n_sensor).fwhm(6f64),
     ))
@@ -158,14 +171,18 @@ NS OPM IM Timing:
         m1_n_mode,
     ))
     .sensor(SH24::<WfsType>::new())
-    /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
-            26.,
-            520,
-            0.,
-            25.,
-            Some("ns-opm-im_atm.bin".to_string()),
-            Some(8),
-    ))*/
+    .atmosphere(
+        crseo::ATMOSPHERE::new()
+            .remove_turbulence_layer(0)
+            .ray_tracing(
+                25.5,
+                atm_sampling,
+                20f32.from_arcmin(),
+                atm_duration,
+                Some("atmosphere/ns-opm-im_atm.sh24.bin".to_string()),
+                atm_n_duration,
+            ),
+    )
     .dome_seeing("b2019_0z_0az_os_7ms", sim_duration, sampling_rate, None)
     .await?
     .build()?;
@@ -207,7 +224,7 @@ NS OPM IM Timing:
         SOURCE::new()
             .band("VIS")
             .size(n_aco_sensor)
-            .on_ring(6f32.from_arcmin())
+            .on_ring(8f32.from_arcmin())
             .fwhm(6f64),
     ))
     .gmt(GMT::new().m1(
@@ -215,14 +232,18 @@ NS OPM IM Timing:
         m1_n_mode,
     ))
     .sensor(SH48::<WfsType>::new().n_sensor(n_aco_sensor))
-    /*        .atmosphere(crseo::ATMOSPHERE::new().ray_tracing(
-        26.,
-        520,
-        0.,
-        25.,
-        Some("ns-opm-im_atm.bin".to_string()),
-        Some(8),
-    ))*/
+    .atmosphere(
+        crseo::ATMOSPHERE::new()
+            .remove_turbulence_layer(0)
+            .ray_tracing(
+                25.5,
+                atm_sampling,
+                20f32.from_arcmin(),
+                atm_duration,
+                Some("atmosphere/ns-opm-im_atm.sh48.bin".to_string()),
+                atm_n_duration,
+            ),
+    )
     .dome_seeing("b2019_0z_0az_os_7ms", sim_duration, sampling_rate, None)
     .await?
     .build()?;
@@ -277,6 +298,8 @@ NS OPM IM Timing:
     .flatten()
     .map(|x| x as f64)
     .collect();
+    let mut file = File::create("aco_poke.pkl").unwrap();
+    pickle::to_writer(&mut file, &(dmat.clone(), 6374, 41 * 2 + 189), true).unwrap();
 
     // Eigen modes and eigen coefs to forces matrix
     let file = File::open("m1_eigen_modes.bin").unwrap();
@@ -483,6 +506,9 @@ NS OPM IM Timing:
                 fem_outputs[ios!(MCM2Lcl6D)].clone(),
                 ios!(M1modes(bm_coefs)),
             ]);
+            if let Some(ref mut atm) = gosm.atm {
+                atm.secs = k as f64 / sampling_rate;
+            }
             gosm.inputs(os_gmt_state.clone())
                 .unwrap()
                 //gosm.inputs(fem_outputs.pop_these(ios!(OSSM1Lcl, MCM2Lcl6D))).unwrap()
@@ -508,6 +534,9 @@ NS OPM IM Timing:
             }
             let l = k - wfs_sample_delay;
             if l >= aco_sample_delay {
+                if let Some(ref mut atm) = gosm_aco.atm {
+                    atm.secs = k as f64 / sampling_rate;
+                }
                 gosm_aco.inputs(os_gmt_state).unwrap().step().unwrap();
                 if l % aco_sample_rate == 0 {
                     m1_bending_modes = aco.in_step_out(gosm_aco.outputs()).unwrap().unwrap();
