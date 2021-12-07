@@ -1,3 +1,24 @@
+//! Winloading the GMT FEM
+//!
+//! Applies CFD wind loads on the FEM, with the mount, M1 and M2 loops closed.
+//!
+//! The path to the directory that contains the FEM is set with environment
+//! variable `FEM_REPO`
+//!
+//! Both the packages `fem` and `dosio` need to be recompiled when `FEM_REPO`
+//! is set to a new value; recompilation can be forced by calling
+//! `cargo clean --release -p dosio -p fem` before running `windloading`
+//!
+//! `windloading is run with: `cargo run --release --bin windloading`
+//!
+//! The FEM must be saved in a file called `modal_state_space_model_2ndOrder.73.pkl`
+//! The conversion of a FEM saved into the mat file `modal_state_space_model_2ndOrder.mat`
+//! is a 2 steps process:
+//!  1. open Matlab in the directory where the FEM file is and run the m-script `table2structure.m`
+//!  2. in the same directory, run the python script: `mat2rs.py`, to get the final file
+//! The 1st step creates a HDF5 file and the 2nd a pkl files, both files are needed.
+//! Both scripts can be found in the example folder of the fem package
+
 use complot::{Axis, Config, Plot};
 use crseo::{from_opticals, OpticalSensitivities};
 use dosio::{ios, Dos, IOVec, IO};
