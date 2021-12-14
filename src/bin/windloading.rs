@@ -20,23 +20,23 @@
 //! Both scripts can be found in the example folder of the fem package
 
 use complot::{Axis, Config, Plot};
-use crseo::{from_opticals, OpticalSensitivities};
-use dosio::{ios, Dos, IOVec, IO};
+use crseo::{from_opticals, OpticalSensitivities}; // CEO WRAPPER
+use dosio::{ios, Dos, IOVec, IO}; // DOSIO
 use fem::{
     dos::{DiscreteModalSolver, DiscreteStateSpace, Exponential},
     FEM,
-};
-use geotrans::{Quaternion, Vector};
+}; // FEM
+use geotrans::{Quaternion, Vector}; // Geometric transformation
 use indicatif::{ProgressBar, ProgressStyle};
 use log;
-use m1_ctrl as m1;
-use mount_ctrl as mount;
+use m1_ctrl as m1; // M1 Ctrlr.
+use mount_ctrl as mount; // Mount Ctrlr.
 use nalgebra as na;
 use ns_opm_im::control::{Control, Delay};
 use serde_pickle as pickle;
 use skyangle::Conversion;
 use std::{fs::File, io::BufWriter, path::Path, time::Instant};
-use windloading::WindLoads;
+use windloading::WindLoads; // Windloads
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -11,21 +11,16 @@ members = ["fsm","active_optics"]
 colorous = "1.0.5"
 #crseo = { git = "https://github.com/rconan/crseo.git", branch = "ns-opm-im", features = ["dos"] }
 crseo = { path = "../crseo", features = ["dos"] }
-dosio = { git = "https://github.com/rconan/dosio.git", branch = "ns-opm-im" }
-#fem = { git = "https://github.com/rconan/fem.git", branch = "ns-opm-im", features = ["dos"] }
-fem = { path = "../fem", features = ["dos"] }
-geotrans = { git = "https://github.com/rconan/geotrans.git", branch = "main" }
+fem = { version = "^0.1", features = ["dos"] , package = "gmt-fem" }
 humantime = "2.1.0"
 indicatif = "0.16.2"
-m1-ctrl = { git = "https://github.com/rconan/m1-ctrl.git", branch = "ns-opm-im" }
-mount-ctrl = { git = "https://github.com/rconan/mount-ctrl.git", branch = "ns-opm-im" }
+m1-ctrl = "^0.1.0"
+mount-ctrl = "^0.1.0"
 plotters = "0.3.1"
 simple_logger = "1.12.1"
 skyangle = { git = "https://github.com/rconan/skyangle.git", branch = "main" }
 structopt = "0.3.22"
-triangle-rs = { git = "https://github.com/rconan/triangle-rs.git", branch = "main" }
-windloading = { git = "https://github.com/rconan/windloading.git", branch = "ns-opm-im" }
-zernike = { git = "https://github.com/rconan/zernike.git", branch = "main" }
+windloading = { path = "../windloading" }
 fsm = { path = "fsm"}
 serde-pickle = "0.6.2"
 thiserror = "1.0.28"
@@ -41,10 +36,14 @@ complot = { version = "0.3.1", features = ["svg"] }
 tokio = { version = "^1.0", features = ["rt"] }
 env_logger = "0.9.0"
 log = "0.4.14"
+dosio = "0.1.2"
+geotrans = "0.2.1"
+triangle-rs = "0.1.2"
+zernike = "^0.2.0"
 
 [dev-dependencies]
 criterion = "0.3"
-mat73 = { git = "https://github.com/rconan/mat73.git", branch = "main" }
+#mat73 = { git = "https://github.com/rconan/mat73.git", branch = "main" }
 
 [[bench]]
 name = "benchmark"

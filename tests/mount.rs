@@ -1,5 +1,8 @@
 use dosio::{ios, Dos};
-use fem::{dos::DiscreteStateSpace, FEM};
+use fem::{
+    dos::{DiscreteStateSpace, Exponential},
+    FEM,
+};
 use mount_ctrl as mount;
 use serde_pickle as pkl;
 use skyangle::Conversion;
@@ -26,7 +29,7 @@ fn mount_zeros() {
         OSSElEncoderAngle,
         OSSRotEncoderAngle
     ))
-    .build()
+    .build::<Exponential>()
     .unwrap();
 
     let mut mount_drives_forces = Some(ios!(
@@ -115,7 +118,7 @@ fn mount_constants() {
         OSSElEncoderAngle,
         OSSRotEncoderAngle
     ))
-    .build()
+    .build::<Exponential>()
     .unwrap();
 
     let mut mount_drives_forces = Some(ios!(

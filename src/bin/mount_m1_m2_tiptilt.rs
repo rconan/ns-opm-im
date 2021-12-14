@@ -7,7 +7,10 @@ use crseo::{
     Builder, Calibration, OpticalSensitivities, ShackHartmann, SH48, SOURCE,
 };
 use dosio::{ios, Dos, IOVec};
-use fem::{dos::DiscreteStateSpace, FEM};
+use fem::{
+    dos::{DiscreteStateSpace, Exponential},
+    FEM,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 use m1_ctrl as m1;
 use mount_ctrl as mount;
@@ -75,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))
     .outputs(vec![ios!(OSSHardpointD)])
     .outputs(ios!(MCM2SmHexD, MCM2PZTD))
-    .build()?;
+    .build::<Exponential>()?;
 
     // CEO WFSS
     let exposure_time = 5e-3;

@@ -9,7 +9,7 @@ edition = "2018"
 bincode = "1.3.3"
 #crseo = { git = "https://github.com/rconan/crseo.git", branch = "ns-opm-im", features = ["dos"] }
 crseo = { path = "../../crseo", features = ["dos"] }
-dosio = { git = "https://github.com/rconan/dosio.git", branch = "ns-opm-im" }
+dosio = "^0.1.2"
 nalgebra = "0.29.0"
 osqp = "0.6.2"
 serde = { version = "1.0.130", features = ["derive"] }

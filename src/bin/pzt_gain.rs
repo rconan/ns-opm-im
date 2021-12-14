@@ -1,5 +1,8 @@
 use dosio::{io::jar, ios, Dos, IO};
-use fem::{dos::DiscreteStateSpace, FEM};
+use fem::{
+    dos::{DiscreteStateSpace, Exponential},
+    FEM,
+};
 use simple_logger::SimpleLogger;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .proportional_damping(2. / 100.)
         .inputs(vec![ios!(MCM2PZTF)])
         .outputs(vec![ios!(MCM2PZTD)])
-        .build()?;
+        .build::<Exponential>()?;
 
         let pzt_force = {
             let mut data = vec![0f64; 42];
